@@ -3,7 +3,7 @@ import { getNodeResourceKind } from "@/lib/canvas/node-registry";
 import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import type { Skill } from "@/services/api/skills";
 import type { Asset, AssetCategory } from "@/stores/use-asset-store";
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeTypeId } from "@/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text" | "skill" | "character";
 
@@ -17,7 +17,7 @@ export type CanvasResourceReference = {
     storageKey?: string;
     text?: string;
     active: boolean;
-    sourceType?: CanvasNodeType;
+    sourceType?: CanvasNodeTypeId;
     skill?: Skill;
     assetId?: string;
     category?: AssetCategory;
@@ -27,6 +27,17 @@ export function canvasResourceMentionToken(reference: CanvasResourceReference) {
     if (reference.kind === "skill" && reference.skill?.skill_id) return `@[skill:${reference.skill.skill_id}]`;
     if (reference.assetId) return `@[asset:${reference.assetId}]`;
     return `@[node:${reference.nodeId}]`;
+}
+
+export function removeCanvasResourceMention(prompt: string, reference: CanvasResourceReference) {
+    const token = canvasResourceMentionToken(reference);
+    if (!token || !prompt.includes(token)) return prompt;
+    return prompt
+        .split(token)
+        .join("")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
 }
 
 export function buildAssetMentionReferences(assets: Asset[]): CanvasResourceReference[] {

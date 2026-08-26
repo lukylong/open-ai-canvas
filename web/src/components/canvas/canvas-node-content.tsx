@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { AlertCircle, BookOpenCheck, Clock3, FileText, Image as ImageIcon, LoaderCircle, Music2, Pencil, Play, RefreshCw, Video } from "lucide-react";
+import { AlertCircle, BookOpenCheck, Clock3, Download, FileText, Image as ImageIcon, LoaderCircle, Music2, Pencil, Play, RefreshCw, Video } from "lucide-react";
 
 import { VideoPlayer } from "@/components/video-player";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
@@ -15,6 +15,8 @@ import { resourceIdFromStorageKey } from "@/services/api/resources";
 import type { GenerationTask } from "@/services/api/task-center";
 import { cacheResourceObjectUrl, getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { PORTRAIT_CLEARANCE_NODE_TYPE } from "@/lib/portrait-clearance/contracts";
 import { createDefaultSubtitleStyle } from "@/types/timeline";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { useCanvasNodeActions } from "./canvas-node-action-context";
@@ -26,8 +28,9 @@ import { ColorGradeNodeContent } from "./nodes/color-grade-node";
 import { HtmlNodeContent } from "./nodes/html-node";
 import { PanoramaNodeContent } from "./nodes/panorama-node";
 import { SvgNodeContent } from "./nodes/svg-node";
+import { PortraitClearanceNodeContent } from "./nodes/portrait-clearance-node";
 
-type CanvasNodeContentProps = {
+export type CanvasNodeContentProps = {
     node: CanvasNodeData;
     theme: CanvasTheme;
     isEditingContent: boolean;
@@ -43,6 +46,7 @@ type CanvasNodeContentProps = {
     onStopEditing: () => void;
     mentionReferences: CanvasResourceReference[];
     onRetry?: (node: CanvasNodeData) => void;
+    onReloadResource?: (node: CanvasNodeData) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onToggleBatch?: () => void;
     reduceMediaEffects?: boolean;
@@ -56,15 +60,39 @@ export function CanvasNodeContent(props: CanvasNodeContentProps) {
         || (props.node.metadata?.workflowKind === "story_input" && !props.isEditingContent)
         || (props.node.metadata?.workflowKind === "styleboard" && !props.node.metadata.content);
     if (hasCustomContent && props.renderNodeContent) return props.renderNodeContent(props.node);
+    if (props.node.type === PORTRAIT_CLEARANCE_NODE_TYPE) return <PortraitClearanceNodeContent node={props.node} />;
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent node={props.node} theme={props.theme} onOpenTaskDetails={props.onOpenTaskDetails} />;
-    if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
+    if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />;
 
+    const pluginDefinition = getNodeDefinition(props.node.type)?.plugin;
+    if (pluginDefinition) return <PluginCanvasNodeContent {...props} renderer={pluginDefinition.renderer} schema={pluginDefinition.schema} />;
     const Renderer = nodeContentRenderers[props.node.type];
     return Renderer ? <Renderer {...props} /> : <UnknownNodeContent theme={props.theme} />;
 }
 
-const nodeContentRenderers = {
+function PluginCanvasNodeContent({ node, theme, renderer, schema }: CanvasNodeContentProps & { renderer: "declarative" | "sandbox"; schema: Record<string, unknown> }) {
+    if (renderer === "sandbox") {
+        return <div className="flex h-full w-full items-center justify-center p-4 text-center text-xs" style={{ color: theme.node.placeholder }}>
+            插件节点等待隔离运行时
+        </div>;
+    }
+    const data = node.metadata?.pluginData || {};
+    const fields = Object.keys(schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, unknown> : schema);
+    return <div className="flex h-full w-full flex-col gap-3 overflow-auto p-4 pt-10 text-xs" style={{ color: theme.node.text }}>
+        {fields.length ? fields.map((field) => <div key={field} className="flex flex-col gap-1">
+            <span className="font-medium opacity-60">{field}</span>
+            <span className="whitespace-pre-wrap break-words opacity-90">{formatPluginValue(data[field] ?? (field === "content" ? node.metadata?.content : undefined))}</span>
+        </div>) : <span className="whitespace-pre-wrap break-words">{node.metadata?.content || "插件节点"}</span>}
+    </div>;
+}
+
+function formatPluginValue(value: unknown) {
+    if (value === undefined || value === null || value === "") return "未设置";
+    return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+const nodeContentRenderers: Partial<Record<string, (props: CanvasNodeContentProps) => ReactNode>> = {
     [CanvasNodeType.Text]: TextContent,
     [CanvasNodeType.Script]: UnknownNodeContent,
     [CanvasNodeType.Skill]: SkillContent,
@@ -81,7 +109,7 @@ const nodeContentRenderers = {
     [CanvasNodeType.Compare]: CompareNodeContent,
     [CanvasNodeType.Chart]: ChartNodeContent,
     [CanvasNodeType.ColorGrade]: ColorGradeNodeContent,
-} satisfies Record<CanvasNodeType, (props: CanvasNodeContentProps) => ReactNode>;
+};
 
 function DrawingContent({ node, theme, drawingProjectId }: CanvasNodeContentProps) {
     const shapeCount = node.metadata?.drawingShapeCount || 0;
@@ -196,7 +224,7 @@ function shortTaskId(id: string) {
     return `${id.slice(0, 14)}...${id.slice(-4)}`;
 }
 
-function ErrorContent({ node, theme, onRetry }: Pick<CanvasNodeContentProps, "node" | "theme" | "onRetry">) {
+function ErrorContent({ node, theme, onRetry, onReloadResource }: Pick<CanvasNodeContentProps, "node" | "theme" | "onRetry" | "onReloadResource">) {
     const moderationFailure = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
     const errorDisplayTask = {
         provider: node.metadata?.taskProvider,
@@ -217,6 +245,29 @@ function ErrorContent({ node, theme, onRetry }: Pick<CanvasNodeContentProps, "no
                 <div className="rounded-[var(--r-sm)] px-3 py-2 text-[var(--fs-label)] leading-4" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
                     修改节点提示词后，可重新点击生成。
                 </div>
+            ) : node.metadata?.resourceReloadAvailable ? (
+                <div className="flex flex-wrap justify-center gap-2">
+                    <button
+                        type="button"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-[var(--r-md)] px-3 text-xs font-medium transition-colors"
+                        style={{ background: theme.accent.primary, color: theme.accent.onPrimary }}
+                        onClick={(event) => { event.stopPropagation(); onReloadResource?.(node); }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <Download className="size-3.5" />
+                        重新加载资源
+                    </button>
+                    <button
+                        type="button"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-[var(--r-md)] px-3 text-xs font-medium transition-colors"
+                        style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
+                        onClick={(event) => { event.stopPropagation(); onRetry?.(node); }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <RefreshCw className="size-3.5" />
+                        重新生成
+                    </button>
+                </div>
             ) : (
                 <button
                     type="button"
@@ -229,7 +280,7 @@ function ErrorContent({ node, theme, onRetry }: Pick<CanvasNodeContentProps, "no
                     onMouseDown={(event) => event.stopPropagation()}
                 >
                     <RefreshCw className="size-3.5" />
-                    {node.metadata?.isBatchRoot ? "重试失败项" : "重试"}
+                    {node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
                 </button>
             )}
         </div>
@@ -335,7 +386,7 @@ function ImageNodeContent(props: CanvasNodeContentProps) {
         const content = props.node.metadata?.status === "loading"
             ? <LoadingContent node={props.node} theme={props.theme} />
             : props.node.metadata?.status === "error"
-                ? <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />
+                ? <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />
                 : <EmptyImageContent {...props} isBatchRoot={false} />;
         return <BatchFrame batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} theme={props.theme} onToggleBatch={props.onToggleBatch}>{content}</BatchFrame>;
     }
@@ -363,6 +414,7 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded
 function VideoNodeContent({ node, theme, reduceMediaEffects }: CanvasNodeContentProps) {
     const playWhenReadyRef = useRef(false);
     const playerBoxRef = useRef<HTMLDivElement>(null);
+    const { updateMetadata } = useCanvasNodeActions();
     const { url, loading, load } = useNodeResourceUrl(node, false);
     const subtitleEntries = node.metadata?.subtitleEntries || [];
     const subtitleStyle = node.metadata?.subtitleStyle || createDefaultSubtitleStyle();
@@ -374,7 +426,11 @@ function VideoNodeContent({ node, theme, reduceMediaEffects }: CanvasNodeContent
         const video = box?.querySelector("video");
         if (!video) return;
         const handleLoadedMetadata = () => {
-            if (video.videoWidth > 0 && video.videoHeight > 0) setVideoSize({ width: video.videoWidth, height: video.videoHeight });
+            if (video.videoWidth <= 0 || video.videoHeight <= 0) return;
+            setVideoSize({ width: video.videoWidth, height: video.videoHeight });
+            if (node.metadata?.naturalWidth !== video.videoWidth || node.metadata?.naturalHeight !== video.videoHeight) {
+                updateMetadata?.(node.id, { naturalWidth: video.videoWidth, naturalHeight: video.videoHeight });
+            }
         };
         video.addEventListener("loadedmetadata", handleLoadedMetadata);
         handleLoadedMetadata();
@@ -385,7 +441,7 @@ function VideoNodeContent({ node, theme, reduceMediaEffects }: CanvasNodeContent
             video.removeEventListener("timeupdate", handleTimeUpdate);
             video.removeEventListener("loadedmetadata", handleLoadedMetadata);
         };
-    }, [subtitleEntries.length, url]);
+    }, [node.id, node.metadata?.naturalHeight, node.metadata?.naturalWidth, subtitleEntries.length, updateMetadata, url]);
 
     if (!node.metadata?.content) return <EmptyMediaContent icon={<Video className="size-7 opacity-35" />} label="空视频节点" color={theme.node.placeholder} />;
     if (!url) return <DeferredMediaLoad icon={loading ? <LoaderCircle className="size-5 animate-spin" /> : <Play className="size-5 fill-current" />} label={loading ? "正在缓存视频" : "加载并缓存视频"} disabled={loading} onClick={() => { playWhenReadyRef.current = true; void load(); }} />;

@@ -60,7 +60,7 @@ func (w *sessionCreationCoordinator) create(userID string, req CreateSessionRequ
 		}
 		return nil, BadAuthRequest("导演扩写方案已被使用，请重新选择")
 	}
-	taskReq := CreateTaskRequest{SessionID: session.ID, ProjectID: req.ProjectID, Type: "agent_storyboard", Operation: "storyboard", Prompt: expandedPrompt, Provider: "openai-compatible", Model: req.Config.Model, LogicalModelID: req.LogicalModelID, Input: map[string]any{"mode": "text", "sourcePrompt": prompt, "directorProposalId": proposal.ID, "directorCandidateKey": proposal.SelectedKey, "references": req.References, "canvasSnapshot": compactedSnapshot, "requirements": req.Requirements, "canvasAssets": req.CanvasAssets, "projectStyle": req.ProjectStyle, "characters": req.Characters, "config": req.Config}}
+	taskReq := CreateTaskRequest{SessionID: session.ID, ProjectID: req.ProjectID, TraceID: req.TraceID, RequestID: req.RequestID, Type: "agent_storyboard", Operation: "storyboard", Prompt: expandedPrompt, Provider: "openai-compatible", Model: req.Config.Model, LogicalModelID: req.LogicalModelID, Input: map[string]any{"mode": "text", "sourcePrompt": prompt, "directorProposalId": proposal.ID, "directorCandidateKey": proposal.SelectedKey, "references": req.References, "canvasSnapshot": compactedSnapshot, "requirements": req.Requirements, "canvasAssets": req.CanvasAssets, "projectStyle": req.ProjectStyle, "characters": req.Characters, "config": req.Config}}
 	if _, err := s.CreateTask(userID, taskReq); err != nil {
 		releaseErr := s.repo.ReleaseDirectorPromptProposal(userID, proposal.ID, session.ID, time.Now())
 		if cleanupErr := w.deleteDraft(userID, session.ID); cleanupErr != nil {

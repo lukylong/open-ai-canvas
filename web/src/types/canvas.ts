@@ -1,6 +1,7 @@
 import type { CanvasColorGrade } from "@/lib/canvas/canvas-color-grade";
 import type { PortraitTextureSettings } from "@/lib/canvas/canvas-portrait-texture";
 import type { StyleExecutionPlan } from "@/lib/canvas/style-profile";
+import type { PortraitClearanceNodeState } from "@/lib/portrait-clearance/contracts";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@/types/timeline";
 
 export type Position = {
@@ -24,8 +25,6 @@ export enum CanvasNodeType {
     Video = "video",
     Audio = "audio",
     Frame = "frame",
-    // 扩展节点：展示与加工。新增一个成员后，编译器会逐个点出还缺哪张表
-    // （NODE_DEFAULT_SIZE / NODE_SPECS / 节点注册表定义 / nodeContentRenderers）。
     Markdown = "markdown",
     Svg = "svg",
     Html = "html",
@@ -33,6 +32,14 @@ export enum CanvasNodeType {
     Compare = "compare",
     Chart = "chart",
     ColorGrade = "colorgrade",
+}
+
+/** Runtime IDs contributed by plugins share the persisted node type field. */
+export type PluginCanvasNodeType = string & { readonly __pluginCanvasNodeType?: unique symbol };
+export type CanvasNodeTypeId = CanvasNodeType | PluginCanvasNodeType;
+
+export function isBuiltinCanvasNodeType(type: CanvasNodeTypeId): type is CanvasNodeType {
+    return Object.values(CanvasNodeType).includes(type as CanvasNodeType);
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
@@ -50,7 +57,7 @@ export type CanvasGenerationBatchStatus = "queued" | "running" | "partial_failed
 export type CanvasGenerationBatchItemStatus = "waiting" | "submitting" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasWorkflowKind = "free" | "script" | "story_input" | "character" | "scene" | "storyboard" | "shot" | "final" | "styleboard" | "reference_set" | "reference_video" | "action_board";
-export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat";
+export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "reference_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat";
 export type CanvasSkillCategory = "writing" | "storyboard" | "image" | "video" | "utility";
 export type CanvasSkillOutputMode = "text" | "json" | "image_prompt" | "workflow";
 export type StoryboardColumn =
@@ -70,8 +77,17 @@ export type StoryboardColumn =
     | "timeBeats"
     | "imageGenerationPrompt"
     | "videoMotionPrompt"
+    | "assets"
     | "continuityOut"
     | "negativePrompt";
+
+export type StoryboardAssetRole = "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "motion" | "audio";
+
+export type StoryboardAssetBinding = {
+    nodeId: string;
+    role: StoryboardAssetRole;
+    priority: number;
+};
 
 export type StoryboardCharacterReference = {
     characterName: string;
@@ -106,7 +122,7 @@ export type StoryboardRow = {
     optionalDetails: string[];
     continuityOut: string;
     negativePrompt: string;
-    referenceNodeIds: string[];
+    assetBindings: StoryboardAssetBinding[];
     imageNodeId?: string;
     videoNodeId?: string;
     status?: CanvasNodeStatus;
@@ -154,6 +170,10 @@ export type CanvasSkillSnapshot = {
 };
 
 export type CanvasNodeMetadata = {
+    /** Namespaced extension ownership for nodes contributed by a unified plugin. */
+    pluginId?: string;
+    pluginNodeId?: string;
+    pluginData?: Record<string, unknown>;
     importSource?:
         | {
               provider: "libtv";
@@ -183,11 +203,18 @@ export type CanvasNodeMetadata = {
     locked?: boolean;
     errorDetails?: string;
     generationErrorCode?: string;
+    resourceReloadAvailable?: boolean;
     failedPromptFingerprint?: string;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
     model?: string;
+    workflowProvider?: "model" | "runninghub" | "comfyui";
+    runningHubWorkflowId?: string;
+    runningHubWorkflowKind?: "workflow" | "app";
+    comfyBridgeWorkflowId?: string;
+    /** 当前画布节点覆盖的工作流动态字段，键为 source:* 或 field:nodeId:fieldName。 */
+    workflowParameters?: Record<string, unknown>;
     size?: string;
     quality?: string;
     transparentBackground?: string;
@@ -232,6 +259,7 @@ export type CanvasNodeMetadata = {
     characterIds?: string[];
     referenceSetId?: string;
     referenceAssetNodeIds?: string[];
+    assetBindings?: StoryboardAssetBinding[];
     characterName?: string;
     characterPrompt?: string;
     characterAliases?: string[];
@@ -266,6 +294,9 @@ export type CanvasNodeMetadata = {
     taskProgress?: number;
     taskStage?: string;
     taskProvider?: string;
+    taskStartedAt?: string;
+    taskCompletedAt?: string;
+    taskDurationMs?: number;
     taskErrorCode?: string;
     taskOfficialStatus?: "pending" | "processing" | "completed" | "failed" | "cancelled";
     taskReceiptRecorded?: boolean;
@@ -283,6 +314,7 @@ export type CanvasNodeMetadata = {
     };
     sessionId?: string;
     videoEditOperation?: CanvasVideoEditOperation;
+    arkPrivateAssetUpload?: string;
     videoCameraMoveId?: string;
     videoCameraMovePrompt?: string;
     videoStartFrameNodeId?: string;
@@ -367,11 +399,13 @@ export type CanvasNodeMetadata = {
         editMode?: "provider-mask" | "local-composite";
     };
     portraitTexture?: PortraitTextureSettings;
+    /** 肖像排查节点只保存可恢复的 UI 状态，不保存图片、embedding 或完整结果。 */
+    portraitClearance?: PortraitClearanceNodeState;
 };
 
 export type CanvasNodeData = {
     id: string;
-    type: CanvasNodeType;
+    type: CanvasNodeTypeId;
     title: string;
     position: Position;
     width: number;
@@ -388,6 +422,8 @@ export type CanvasConnection = {
     toHandleId?: string;
     fromAnchorRatio?: number;
     toAnchorRatio?: number;
+    relation?: "storyboard-output" | "storyboard-asset-reference";
+    storyboardRowId?: string;
 };
 
 export type CanvasDisplayConnection = {
@@ -398,7 +434,7 @@ export type CanvasDisplayConnection = {
 
 export type CanvasAssistantReference = {
     id: string;
-    type: CanvasNodeType;
+    type: CanvasNodeTypeId;
     title: string;
     dataUrl?: string;
     storageKey?: string;

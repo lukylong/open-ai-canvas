@@ -178,7 +178,7 @@ test("Canvas task surfaces route Dreamina uncertainty through shared display sem
     expect(nodeSource).toContain("isGenerationTaskSubmissionUncertain(errorDisplayTask)");
     expect(taskCenterSource).toContain("if (currentTask && isGenerationTaskSubmissionUncertain(currentTask))");
     expect(taskCenterSource).toContain("不能自动重试；请先核对官方状态，避免重复生成");
-    expect(taskCenterSource).toContain('onRetry={() => void runAction(task.id)}');
+    expect(taskCenterSource).toContain("onRetry={() => void runAction(task.id)}");
     expect(taskCenterSource).toContain("<TaskListRow");
     expect(taskCenterSource).toContain("<TaskGridCard");
     expect(createSource).not.toContain('item.generationStage === "submission_unknown"');
@@ -192,7 +192,7 @@ test("task center deletion accepts only local Dreamina records", async () => {
     const deleteActionSource = sourceSection(source, "const deleteLocalTask =", "const refreshLocalTaskStatus =");
 
     expect(compactedSource).toMatch(/\{detailTask\.provider === "dreamina-cli" \? \( <Button .*?aria-label="删除本机记录".*?onClick=\{\(\) => deleteLocalTask\(detailTask\)\}> 删除本机记录 <\/Button> \) : null\}/);
-    expect(compactedSource).toContain("任务已由官方接受；删除后仍会在后台同步官方状态。");
+    expect(compactedSource).toContain("官方状态采用最终一致轮询；转入后台后仍会继续等待并同步官方状态。");
     expect(deleteActionSource).toContain("await deleteGenerationTask(task.id);");
 });
 
@@ -1319,6 +1319,15 @@ test("remote image video and audio references keep Backend parity without Dreami
             operation: "reference_to_video",
         },
         {
+            mode: "video" as const,
+            references: {
+                referenceImages: [{ id: "remote-image-audio-image-0001", name: "reference.png", type: "image/png", dataUrl: "", storageKey: "resource:remote-image-audio-image-0001" }],
+                referenceAudios: [{ id: "remote-image-audio-audio-0001", name: "reference.mp3", type: "audio/mpeg", url: "", storageKey: "resource:remote-image-audio-audio-0001" }],
+            },
+            result: { mode: "video", video: { dataUrl: "opaque://video", storageKey: "resource:remote-image-audio-output" } },
+            operation: "reference_to_video",
+        },
+        {
             mode: "audio" as const,
             references: { referenceAudios: [{ id: "remote-audio-0001", name: "audio.mp3", type: "audio/mpeg", url: "", storageKey: "resource:remote-audio-0001" }] },
             result: { mode: "audio", audio: { dataUrl: "opaque://audio", storageKey: "resource:remote-audio-output" } },
@@ -1677,7 +1686,7 @@ test("Create audio upload converts, previews, removes, and submits through the s
         operation?: string;
         input?: { referenceAudios?: Array<Record<string, unknown>> };
     };
-    expect(submitted.operation).toBe("reference_to_video");
+    expect(submitted.operation).toBe("audio_to_video");
     expect(submitted.input?.referenceAudios).toEqual([
         {
             id: attachment.id,

@@ -42,6 +42,23 @@ func TestNormalizeChannelModelContractRejectsCapabilityMismatch(t *testing.T) {
 	}
 }
 
+func TestNormalizeChannelModelContractKeepsLegacyComfyUIWorkflowCapabilities(t *testing.T) {
+	channel := &model.ModelChannel{APIKey: "adapter-key"}
+	for _, capability := range []string{"image", "video"} {
+		t.Run(capability, func(t *testing.T) {
+			_, _, gotCapability, gotProtocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{
+				ModelKey: "workflow-model", Capability: capability, Protocol: string(model.ChannelInterfaceComfyUIWorkflow),
+			})
+			if err != nil {
+				t.Fatalf("normalizeChannelModelContract() error = %v", err)
+			}
+			if gotCapability != capability || gotProtocol != model.ChannelInterfaceComfyUIWorkflow {
+				t.Fatalf("contract = capability %q, protocol %q", gotCapability, gotProtocol)
+			}
+		})
+	}
+}
+
 func TestNormalizeChannelModelContractRequiresJiMengSecret(t *testing.T) {
 	channel := &model.ModelChannel{APIKey: "access-key"}
 	_, _, _, _, err := normalizeChannelModelContract(channel, ChannelModelRequest{

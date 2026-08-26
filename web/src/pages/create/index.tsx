@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FocusEvent, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { App, Button, Drawer, Modal, Popover, Spin, Tooltip } from "antd";
-import { ArrowDown, ArrowUp, Check, ChevronDown, Clapperboard, Clock3, Copy, Download, FileText, Film, FolderOpen, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Music2, Paperclip, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
+import { Reorder } from "motion/react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Clock3, Copy, Download, FileText, Film, FolderOpen, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Music2, Paperclip, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
 import { Link } from "react-router";
 
 import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
@@ -8,6 +9,7 @@ import { GenerationToolCard, type GenerationToolStatus } from "@/components/ai/g
 import { MessageReasoning } from "@/components/ai/message-reasoning";
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
 import { CanvasResourceMentionTextarea } from "@/components/canvas/canvas-resource-mention-textarea";
+import { CanvasPromptOptimizerDrawer } from "@/components/canvas/canvas-prompt-optimizer-drawer";
 import { VoiceRecordingButton } from "@/components/conversation/voice-recording-button";
 import { ModelPicker } from "@/components/model-picker";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
@@ -20,8 +22,8 @@ import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
 import { buildImageResolutionOptions, formatImageResolutionSize, imageRatioForSize, imageResolutionChoices, imageResolutionOption, imageSizeForResolution, supportsImageResolutionPresets, type ImageResolutionChoice } from "@/lib/image-resolution-tiers";
 import { VIDEO_RESOLUTION_OPTIONS } from "@/lib/video-generation-options";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationAllowed, videoDurationOptions, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
-import { resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
-import { isGenerationTaskCancelled, logicalModelIDForConfig, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
+import { inferVideoOperation, resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
+import { backendModelRuntimeRequired, isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
 import { requestImageQuestion, type AiTextContentPart } from "@/services/api/image";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
 import { subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
@@ -38,6 +40,10 @@ import { recoverCreationTextTask } from "@/services/creation-text-task-recovery"
 import { modelDisplayName, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { useUserStore } from "@/stores/use-user-store";
+import type { PromptOptimizerProvider } from "@/lib/plugins/plugin-types";
+import { promptOptimizerPlugin, PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
+import { createPluginHostContext } from "@/services/plugin-host";
+import { usePluginStore } from "@/stores/use-plugin-store";
 import { buildCreationMentionReferences, creationReferenceMetadata, displayCreationPrompt, expandCreationPrompt, reconcileCreationAttachmentLimit, removeCreationReferenceTokens, selectedCreationReferences, type CreationReference } from "./creation-references";
 import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromAudioAsset, creationAttachmentFromDocument, creationAttachmentFromExternalAsset, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentFromVideoAsset, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
 
@@ -133,6 +139,11 @@ export default function CreatePage() {
     const config = useEffectiveConfig();
 	const batchMaxCount = useUserStore((state) => state.runtimeLimits.batchMaxCount);
 	const activeTaskLimit = useUserStore((state) => state.runtimeLimits.activeTaskLimit);
+    const promptOptimizerInstallation = usePluginStore((state) => state.installations.find((item) => item.manifest.id === PROMPT_OPTIMIZER_PLUGIN_ID));
+    const promptOptimizerProvider = useMemo<PromptOptimizerProvider | null>(() => {
+        if (!promptOptimizerInstallation?.enabled || !promptOptimizerPlugin.createPromptOptimizer) return null;
+        return promptOptimizerPlugin.createPromptOptimizer(createPluginHostContext(promptOptimizerPlugin, promptOptimizerInstallation, config));
+    }, [config, promptOptimizerInstallation]);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const assets = useAssetStore((state) => state.assets);
     const addAsset = useAssetStore((state) => state.addAsset);
@@ -541,6 +552,10 @@ export default function CreatePage() {
         if (reference) setPrompt((current) => removeCreationReferenceTokens(current, [reference]));
     };
 
+    const reorderAttachments = useCallback((next: CreationAttachment[]) => {
+        setAttachments(next);
+    }, []);
+
     const submit = async (retryContext?: CreationRetryContext, retryLockKey?: string) => {
         const releaseRetryLock = () => {
             if (retryLockKey) retryPreparingRef.current.delete(retryLockKey);
@@ -569,6 +584,13 @@ export default function CreatePage() {
         const references = selectedCreationReferences(text, mentionReferences);
         // 后端对图片和视频使用不同的参考字段；这里先拆分，避免媒体类型在写入任务时被误判。
         const { referenceImages, referenceVideos, referenceAudios } = splitCreationAttachments(attachments);
+        const videoOperation = inferVideoOperation({
+            textCount: text ? 1 : 0,
+            imageCount: referenceImages.length,
+            videoCount: referenceVideos.length,
+            audioCount: referenceAudios.length,
+            characterCount: 0,
+        });
         const expandedPrompt = expandCreationPrompt(text, references, attachments);
         const referenceMetadata = creationReferenceMetadata(references);
         followLatestMessageRef.current = true;
@@ -631,7 +653,7 @@ export default function CreatePage() {
         };
         try {
             if (mode === "text") {
-				if (logicalModelIDForConfig(requestConfig)) {
+                if (backendModelRuntimeRequired(requestConfig)) {
 					const result = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTask({
 						mode: "text",
 						prompt: expandedPrompt,
@@ -722,7 +744,7 @@ export default function CreatePage() {
                     referenceVideos,
                     referenceAudios,
                     signal: requestLifecycle.signal,
-                    metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, videoEditOperation: referenceAudios.length && !referenceImages.length && !referenceVideos.length ? "audio_to_video" : attachments.length ? "image_to_video" : "text_to_video", ...referenceMetadata },
+                    metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, videoEditOperation: videoOperation, ...referenceMetadata },
                     onTaskUpdate: bindTask,
                     ...retryContext,
                 }));
@@ -742,7 +764,7 @@ export default function CreatePage() {
                 return;
             }
             const message = generationErrorMessage(error);
-            updateOriginAssistant((item) => ({ ...item, status: "error", error: message, generationErrorCode: item.generationErrorCode || generationErrorCode(error), generationOperation: item.generationOperation || (mode === "video" ? (attachments.length ? "image_to_video" : "text_to_video") : mode), createdAt: assistantMessage.createdAt, content: "生成失败" }));
+            updateOriginAssistant((item) => ({ ...item, status: "error", error: message, generationErrorCode: item.generationErrorCode || generationErrorCode(error), generationOperation: item.generationOperation || (mode === "video" ? videoOperation : mode), createdAt: assistantMessage.createdAt, content: "生成失败" }));
         } finally {
             requestLifecycle.release();
             releaseRetryLock();
@@ -922,6 +944,7 @@ export default function CreatePage() {
         maxReferences,
         references: mentionReferences,
         onRemoveAttachment: removeAttachment,
+        onReorderAttachments: reorderAttachments,
         onOpenLibrary: () => setLibraryOpen(true),
         fileInputRef,
         onFileChange: handleFileChange,
@@ -944,6 +967,7 @@ export default function CreatePage() {
 		setCount,
 		batchMaxCount,
 		activeTaskLimit,
+        promptOptimizerProvider,
         composerFocusRef,
         placeholderOverride: viewMode === "storyboard" && composingNextShot ? `SC.${String(nextShotNumber).padStart(2, "0")} · 写下这一镜的镜头、画面或故事` : undefined,
         onSubmit: () => void submit(),
@@ -1176,24 +1200,20 @@ function CreationMediaPreviewModal({ url, type, onClose }: { url: string; type: 
     return <Modal open={Boolean(url)} title={null} footer={null} centered destroyOnHidden width={type === "video" ? "min(1160px, calc(100vw - 32px))" : "min(980px, calc(100vw - 32px))"} onCancel={onClose} className="creation-media-preview-modal" styles={{ body: { padding: 0 } }}>{url ? type === "video" ? <video controls autoPlay className="creation-media-preview-video" src={url} /> : <img className="creation-media-preview-image" src={url} alt="媒体预览" /> : null}</Modal>;
 }
 
-function CreationAttachmentThumbnail({ item, primary = false, canAddMore = false, onPreview, onRemove, onAdd }: {
+function CreationAttachmentThumbnail({ item, onPreview, onRemove }: {
     item: CreationAttachment;
-    primary?: boolean;
-    canAddMore?: boolean;
     onPreview: (type: "image" | "video", url: string) => void;
     onRemove: (id: string) => void;
-    onAdd?: () => void;
 }) {
     const kind = creationAttachmentKind(item);
     const previewable = kind === "image" || kind === "video";
     const url = (kind === "video" ? item.url : item.previewUrl) || "";
-    return <div className={primary ? "creation-chat-reference is-paper creation-chat-reference-media" : "creation-chat-attachment"}>
-        <button type="button" className={`creation-chat-attachment-preview${previewable ? "" : " is-file"}`} onClick={() => { if (previewable) onPreview(kind === "video" ? "video" : "image", url); }} aria-label={previewable ? `放大预览 ${item.name}` : item.name} disabled={previewable && !url}>
+    return <div className="creation-reference-card-content">
+        <button type="button" className={`creation-reference-card-preview${previewable ? "" : " is-file"}`} onClick={() => { if (previewable) onPreview(kind === "video" ? "video" : "image", url); }} aria-label={previewable ? `放大预览 ${item.name}` : item.name} disabled={previewable && !url}>
             {kind === "video" ? <video src={item.url} poster={item.previewUrl !== item.url ? item.previewUrl : undefined} muted playsInline preload="metadata" aria-label={item.name} /> : kind === "image" ? <img src={item.previewUrl} alt={item.name} /> : <span className="creation-chat-file-icon">{kind === "audio" ? <Music2 /> : <FileText />}<em>{item.name}</em></span>}
             {previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}
         </button>
-        <button type="button" className="creation-chat-attachment-remove" onClick={() => onRemove(item.id)} aria-label={`移除 ${item.name}`}><X /></button>
-        {primary && canAddMore && onAdd ? <Tooltip title="添加更多参考内容"><button type="button" className="creation-chat-reference-add" onClick={onAdd} aria-label="添加更多参考内容"><Plus /></button></Tooltip> : null}
+        <button type="button" className="creation-reference-card-remove" onClick={(event) => { event.stopPropagation(); onRemove(item.id); }} aria-label={`移除 ${item.name}`}><X /></button>
     </div>;
 }
 
@@ -1208,6 +1228,7 @@ type ComposerProps = {
     maxReferences: number;
     references: CreationReference[];
     onRemoveAttachment: (id: string) => void;
+    onReorderAttachments: (attachments: CreationAttachment[]) => void;
     onOpenLibrary: () => void;
     fileInputRef: RefObject<HTMLInputElement | null>;
     onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -1230,6 +1251,7 @@ type ComposerProps = {
 	setCount: (value: string) => void;
 	batchMaxCount: number;
 	activeTaskLimit: number;
+    promptOptimizerProvider: PromptOptimizerProvider | null;
     composerFocusRef: RefObject<HTMLTextAreaElement | null>;
     placeholderOverride?: string;
     onSubmit: () => void;
@@ -1238,9 +1260,16 @@ type ComposerProps = {
 function CreationComposer(props: ComposerProps) {
     const [previewUrl, setPreviewUrl] = useState("");
     const [previewType, setPreviewType] = useState<"image" | "video">("image");
+    const [promptOptimizerOpen, setPromptOptimizerOpen] = useState(false);
+    const attachmentTrackRef = useRef<HTMLUListElement>(null);
+    const cardDragRef = useRef<{ startX: number; startY: number; moved: boolean } | null>(null);
+    const suppressAttachmentClickRef = useRef(false);
+    const [trackState, setTrackState] = useState({ canScrollLeft: false, canScrollRight: false, isExpanded: false, isDragging: false });
     const canSubmit = Boolean(props.prompt.trim()) && !props.busy;
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const priceChannel = resolveModelChannel(props.config, props.model);
+    const canOptimizePrompt = Boolean(props.promptOptimizerProvider) && (props.mode === "image" || props.mode === "video");
+    const optimizerReferences = props.references.filter((reference) => reference.active && reference.kind !== "skill");
     const credits = requestCreditCost({
         channelMode: priceChannel.scope === "system" ? "remote" : "local",
         modelCosts: priceChannel.modelCosts,
@@ -1259,20 +1288,118 @@ function CreationComposer(props: ComposerProps) {
     const emptyPlaceholder = "输入你的镜头、画面或故事。也可以添加参考图开始创作";
     const imageReferencesSupported = props.imageProfile.references.maxImages > 0;
     const referencesSupported = props.mode === "image" ? imageReferencesSupported : props.mode !== "video" || props.videoProfile.operations.includes("image_to_video");
-    const [primaryAttachment, ...secondaryAttachments] = props.attachments;
     const canAddMoreReferences = referencesSupported && props.attachments.length < props.maxReferences;
 	const imageSettingsSupported = props.imageProfile.size.parameter !== "none" || props.imageProfile.quality.supported || props.batchMaxCount > 1;
+    const updateTrackScrollState = useCallback(() => {
+        const track = attachmentTrackRef.current;
+        if (!track) return;
+        setTrackState((current) => ({
+            ...current,
+            canScrollLeft: track.scrollLeft > 1,
+            canScrollRight: track.scrollLeft + track.clientWidth < track.scrollWidth - 1,
+        }));
+    }, []);
+    const handleTrackMouseEnter = useCallback(() => {
+        if (window.matchMedia("(hover: hover)").matches) setTrackState((current) => ({ ...current, isExpanded: true }));
+    }, []);
+    const handleTrackMouseLeave = useCallback(() => {
+        if (!trackState.isDragging) setTrackState((current) => ({ ...current, isExpanded: false }));
+    }, [trackState.isDragging]);
+    const handleTrackFocus = useCallback(() => {
+        setTrackState((current) => ({ ...current, isExpanded: true }));
+    }, []);
+    const handleTrackBlur = useCallback((event: FocusEvent<HTMLElement>) => {
+        if (!trackState.isDragging && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setTrackState((current) => ({ ...current, isExpanded: false }));
+        }
+    }, [trackState.isDragging]);
+    useEffect(() => {
+        const touchOnly = window.matchMedia("(hover: none)").matches;
+        setTrackState((current) => ({ ...current, isExpanded: touchOnly || current.isDragging }));
+        updateTrackScrollState();
+    }, [props.attachments.length, updateTrackScrollState]);
+    useEffect(() => {
+        const frame = window.requestAnimationFrame(updateTrackScrollState);
+        return () => window.cancelAnimationFrame(frame);
+    }, [trackState.isExpanded, updateTrackScrollState]);
+    const beginCardDrag = (event: PointerEvent<HTMLElement>) => {
+        if (event.button !== 0 || props.busy) return;
+        if ((event.target as HTMLElement).closest(".creation-reference-card-remove")) return;
+        cardDragRef.current = { startX: event.clientX, startY: event.clientY, moved: false };
+    };
+    const endCardDrag = (event: PointerEvent<HTMLElement>) => {
+        const drag = cardDragRef.current;
+        if (!drag) return;
+        cardDragRef.current = null;
+        if (drag.moved) {
+            suppressAttachmentClickRef.current = true;
+            window.setTimeout(() => { suppressAttachmentClickRef.current = false; }, 0);
+        }
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        setTrackState((current) => ({ ...current, isDragging: false }));
+    };
+    const moveCardDrag = (event: PointerEvent<HTMLElement>) => {
+        const drag = cardDragRef.current;
+        if (!drag || drag.moved) return;
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <= 4) return;
+        drag.moved = true;
+        setTrackState((current) => ({ ...current, isDragging: true, isExpanded: true }));
+    };
     const previewAttachment = (type: "image" | "video", url: string) => {
+        if (suppressAttachmentClickRef.current || cardDragRef.current?.moved) return;
         setPreviewType(type);
         setPreviewUrl(url);
     };
-    return <section className={`creation-chat-composer is-${props.variant}`}>
+    useEffect(() => {
+        if (!canOptimizePrompt) setPromptOptimizerOpen(false);
+    }, [canOptimizePrompt]);
+
+    const scrollAttachmentTrack = (direction: -1 | 1) => {
+        const track = attachmentTrackRef.current;
+        if (!track) return;
+        track.scrollBy({ left: direction * Math.max(track.clientWidth * 0.72, 120), behavior: "smooth" });
+        window.setTimeout(updateTrackScrollState, 180);
+    };
+    const composer = <section className={`creation-chat-composer is-${props.variant}`}>
         <div className="creation-chat-writing-surface">
             <input ref={props.fileInputRef} type="file" hidden accept={creationUploadAccept(props.mode)} multiple onChange={props.onFileChange} />
-            {primaryAttachment ? <CreationAttachmentThumbnail item={primaryAttachment} primary canAddMore={canAddMoreReferences && !props.busy} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} onAdd={props.onOpenLibrary} /> : <Tooltip title={!referencesSupported ? "当前模型不支持参考媒体" : "从素材库选择参考内容"}><button type="button" className="creation-chat-reference is-paper" onClick={props.onOpenLibrary} disabled={props.busy || !referencesSupported} aria-label="打开素材库选择参考内容"><Plus /><span>参考内容</span></button></Tooltip>}
             <div className="creation-chat-editor">
                 <CanvasResourceMentionTextarea ref={props.composerFocusRef} value={props.prompt} references={props.references} mentionMenuWidth={400} sendOnEnter={false} onChange={props.setPrompt} onSubmit={props.onSubmit} containerClassName="creation-chat-mention-container" className="creation-chat-mention-editor creation-scrollbar" style={{ color: "var(--creation-text)" }} placeholder={props.placeholderOverride || (props.variant === "empty" ? emptyPlaceholder : placeholder)} aria-label="创作提示词，可使用 @ 引用当前参考内容或技能" spellCheck disabled={props.busy} />
-                {secondaryAttachments.length ? <div className="creation-chat-attachment-strip">{secondaryAttachments.map((item) => <CreationAttachmentThumbnail key={item.id} item={item} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} />)}</div> : null}
+                {props.attachments.length || canAddMoreReferences ? <div className="creation-reference-track-wrapper">
+                    <div className="creation-reference-stack-shell" onMouseEnter={handleTrackMouseEnter} onMouseLeave={handleTrackMouseLeave} onFocus={handleTrackFocus} onBlur={handleTrackBlur}>
+                        {trackState.canScrollLeft ? <button type="button" className="creation-reference-track-button is-left" onClick={() => scrollAttachmentTrack(-1)} aria-label="向左浏览参考内容" title="向左浏览参考内容"><ChevronLeft aria-hidden="true" /></button> : null}
+                        <Reorder.Group<CreationAttachment[]>
+                            as="ul"
+                            ref={attachmentTrackRef}
+                            className={`creation-reference-track${trackState.isExpanded ? " is-expanded" : ""}${trackState.isDragging ? " is-dragging" : ""}${props.attachments.length ? "" : " is-empty"}`}
+                            axis="x"
+                            values={props.attachments}
+                            onReorder={props.onReorderAttachments}
+                            layoutScroll
+                            role="list"
+                            aria-label="参考内容轨道"
+                            onScroll={updateTrackScrollState}
+                        >
+                            {props.attachments.map((item) => <Reorder.Item<CreationAttachment>
+                                key={item.id}
+                                value={item}
+                                layout="position"
+                                drag={!props.busy}
+                                className="creation-reference-stack-card"
+                                onPointerDown={beginCardDrag}
+                                onPointerMove={moveCardDrag}
+                                onPointerUp={endCardDrag}
+                                onPointerCancel={endCardDrag}
+                                onDragStart={() => setTrackState((current) => ({ ...current, isDragging: true, isExpanded: true }))}
+                                onDragEnd={() => setTrackState((current) => ({ ...current, isDragging: false, isExpanded: true }))}
+                            >
+                                <CreationAttachmentThumbnail item={item} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} />
+                            </Reorder.Item>)}
+                            {canAddMoreReferences ? <li className="creation-reference-add-slot"><Tooltip title="添加更多参考内容"><button type="button" className="creation-reference-add-button" onClick={props.onOpenLibrary} disabled={props.busy} aria-label="添加更多参考内容"><Plus aria-hidden="true" /></button></Tooltip></li> : null}
+                        </Reorder.Group>
+                        {trackState.canScrollRight ? <button type="button" className="creation-reference-track-button is-right" onClick={() => scrollAttachmentTrack(1)} aria-label="向右浏览参考内容" title="向右浏览参考内容"><ChevronRight aria-hidden="true" /></button> : null}
+                    </div>
+                </div> : null}
             </div>
         </div>
         <footer className="creation-chat-dock">
@@ -1282,6 +1409,19 @@ function CreationComposer(props: ComposerProps) {
                     onTranscribed={(text) => props.setPrompt(props.prompt.trim() ? `${props.prompt} ${text}` : text)}
                 />
                 <ModePicker mode={props.mode} onModeChange={props.onModeChange} />
+                {canOptimizePrompt ? <Tooltip title="用 AI 优化提示词">
+                    <button
+                        type="button"
+                        className="creation-chat-control"
+                        onClick={() => setPromptOptimizerOpen(true)}
+                        aria-label="优化提示词"
+                        aria-expanded={promptOptimizerOpen}
+                        aria-haspopup="dialog"
+                    >
+                        <WandSparkles />
+                        <span>优化</span>
+                    </button>
+                </Tooltip> : null}
                 <Tooltip title="从本机上传附件"><button type="button" className="creation-chat-control" onClick={() => props.fileInputRef.current?.click()} disabled={props.busy || !referencesSupported} aria-label="从本机上传附件"><Paperclip /><span>附件</span></button></Tooltip>
                 <Tooltip title={!referencesSupported ? "当前模型不支持参考媒体" : "从素材库选择参考内容"}><button type="button" className="creation-chat-control" onClick={props.onOpenLibrary} disabled={props.busy || !referencesSupported} aria-label="打开素材库选择参考内容"><FolderOpen /><span>素材库</span></button></Tooltip>
 				<ModelPicker config={props.config} value={props.model} onChange={props.onModelChange} capability={props.mode} requirements={props.modelRequirements} className="creation-model-picker" placeholder={`选择${modeLabels[props.mode]}模型`} showSelectedPrice variant="creation" />
@@ -1307,6 +1447,24 @@ function CreationComposer(props: ComposerProps) {
         </footer>
         <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </section>;
+
+    return (
+        <CanvasPromptOptimizerDrawer
+            open={promptOptimizerOpen}
+            prompt={props.prompt}
+            generationMode={props.mode === "video" ? "video" : "image"}
+            targetModel={modelOptionName(props.model) || props.model}
+            targetProtocol={priceChannel.modelCosts?.find((item) => item.model === modelOptionName(props.model))?.protocol || priceChannel.interfaceType}
+            config={props.config}
+            optimizerModel={props.config.textModel}
+            references={optimizerReferences}
+            provider={props.promptOptimizerProvider}
+            onClose={() => setPromptOptimizerOpen(false)}
+            onApply={props.setPrompt}
+        >
+            {composer}
+        </CanvasPromptOptimizerDrawer>
+    );
 }
 
 function ModePicker({ mode, onModeChange }: { mode: CreationMode; onModeChange: (mode: CreationMode) => void }) {

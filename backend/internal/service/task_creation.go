@@ -35,16 +35,47 @@ func (s *Service) createTask(userID string, req CreateTaskRequest, link *taskBat
 	if err != nil {
 		return nil, err
 	}
+
 	var routed *RoutedModel
 	logicalModelID := strings.TrimSpace(req.LogicalModelID)
-	if logicalModelID != "" {
-		intent := ModelRequestIntentFromTaskInput(normalizedInput, taskType, req.Operation)
-		routed, err = s.ResolveLogicalModel(logicalModelID, intent)
+	workflowProviderTask := taskInputUsesWorkflowProvider(normalizedInput)
+	managedBatchTask := link != nil && logicalModelID != ""
+	frontendEnabled := false
+	if !workflowProviderTask {
+		// 工作流是独立执行器；普通模型仍严格使用主线的目录和路由校验。
+		frontendEnabled, err = s.FeatureEnabled(FeatureFrontendModels)
 		if err != nil {
 			return nil, err
 		}
-		normalizedInput = applyRoutedProviderSelection(normalizedInput, routed)
 	}
+
+	if !workflowProviderTask {
+		if frontendEnabled || managedBatchTask {
+			// 前台模型模式：必须有 logicalModelId
+			if logicalModelID == "" {
+				return nil, InvalidModelSelection("前台模型模式下必须指定 logicalModelId")
+			}
+			intent := ModelRequestIntentFromTaskInput(normalizedInput, taskType, req.Operation)
+			routed, err = s.ResolveLogicalModel(logicalModelID, intent)
+			if err != nil {
+				return nil, err
+			}
+			normalizedInput = applyRoutedProviderSelection(normalizedInput, routed)
+		} else {
+			// 系统渠道模型模式：禁止 logicalModelId
+			if logicalModelID != "" {
+				return nil, ModelCatalogMismatch("模型目录已更新，请重新选择")
+			}
+			// 自定义渠道没有系统 channelId；它会在后续由自定义渠道功能开关、
+			// 能力校验和 provider 配置校验共同处理，不能误报为“缺少系统渠道”。
+			if !taskInputUsesCustomChannel(normalizedInput) {
+				if err := s.validateSystemChannelModelSelection(normalizedInput); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
 	if strings.HasPrefix(taskType, "video_") && !hasExecutableProviderVideoConfig(normalizedInput) {
 		if mode, _ := normalizedInput["mode"].(string); mode != "video" {
 			return nil, errors.New("视频任务必须使用 video 模式")
@@ -75,7 +106,7 @@ func (s *Service) createTask(userID string, req CreateTaskRequest, link *taskBat
 	if activeTasks >= int64(policy.Task.ActiveTaskLimit) {
 		return nil, WrapAppError(400, fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit), repository.ErrActiveTaskLimit)
 	}
-	task := model.Task{ID: newID(), UserID: userID, SessionID: req.SessionID, ProjectID: req.ProjectID, Type: taskType, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
+	task := model.Task{ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, SessionID: req.SessionID, ProjectID: req.ProjectID, Type: taskType, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
 	if link != nil {
 		task.BatchID = link.BatchID
 		task.BatchItemID = &link.ItemID
@@ -208,7 +239,7 @@ func (s *Service) createTextReplayTask(userID string, req CreateTaskRequest, nor
 		return nil, err
 	}
 	task := model.Task{
-		ID: newID(), UserID: userID, SessionID: req.SessionID, ProjectID: req.ProjectID,
+		ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, SessionID: req.SessionID, ProjectID: req.ProjectID,
 		Type: taskType, Status: model.TaskStatusTextReplay, Stage: "文本持久化（前端自管）", Progress: 5,
 		Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: strings.TrimSpace(req.Model),
 	}
@@ -251,7 +282,53 @@ func (s *Service) requireCustomChannelsForTaskInput(input map[string]any) error 
 	return s.RequireFeature(FeatureCustomChannels)
 }
 
+// validateSystemChannelModelSelection 校验系统渠道模型选择的有效性
+func (s *Service) validateSystemChannelModelSelection(input map[string]any) error {
+	config, ok := input["config"].(map[string]any)
+	if !ok {
+		return InvalidModelSelection("缺少模型配置")
+	}
+
+	channelID, _ := config["channelId"].(string)
+	modelKey, _ := config["model"].(string)
+
+	channelID = strings.TrimSpace(channelID)
+	modelKey = strings.TrimSpace(modelKey)
+
+	if channelID == "" || modelKey == "" {
+		return InvalidModelSelection("必须指定系统渠道和模型")
+	}
+
+	// 验证渠道存在且启用
+	channel, err := s.repo.SystemChannel(channelID)
+	if err != nil {
+		return InvalidModelSelection("指定的渠道不存在")
+	}
+	if !channel.Enabled || channel.Scope != model.ChannelScopeSystem {
+		return InvalidModelSelection("指定的渠道不可用")
+	}
+
+	// 验证渠道模型存在且启用
+	channelModel, err := s.repo.ChannelModelByKey(channelID, modelKey)
+	if err != nil {
+		return InvalidModelSelection("指定的模型不存在")
+	}
+	if !channelModel.Enabled {
+		return InvalidModelSelection("指定的模型已停用")
+	}
+
+	// 验证价格配置
+	if !HasValidPrice(channelModel) {
+		return ModelPriceNotConfigured("指定的模型未配置有效价格")
+	}
+
+	return nil
+}
+
 func taskInputUsesCustomChannel(input map[string]any) bool {
+	if taskInputUsesWorkflowProvider(input) {
+		return false
+	}
 	config, ok := input["config"].(map[string]any)
 	if !ok {
 		return false
@@ -263,6 +340,14 @@ func taskInputUsesCustomChannel(input map[string]any) bool {
 		return false
 	}
 	return strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
+}
+
+func taskInputUsesWorkflowProvider(input map[string]any) bool {
+	config, ok := input["config"].(map[string]any)
+	if !ok {
+		return false
+	}
+	return isWorkflowProviderInterface(strings.TrimSpace(fmt.Sprint(config["interfaceType"])))
 }
 
 func compactPersistedValue(value interface{}) interface{} {

@@ -1,50 +1,30 @@
 ---
 title: 后端数据库
-description: ZQ 能力迁移新增的数据表、字段和一致性边界
+description: 影策后端核心持久化表与状态边界
 ---
 
 # 后端数据库
 
-## 账号与邀请
+后端通过 GORM 管理 SQLite 与 PostgreSQL 表结构。服务启动时由 `backend/internal/database/schema.go` 执行迁移；业务写路径必须通过 service 和 repository 的状态约束，不能直接依赖前端状态。
 
-- `users.avatar_url`、`users.source_system`：保留迁移头像和来源。
-- `invitation_codes`：只保存标准化邀请码的 SHA-256、末尾预览、次数、过期/撤销时间和创建人。
-- `invitation_code_usages`：邀请码和用户的一次性使用记录。
+## ComfyUI Bridge
 
-注册时邀请码计数增加、用户创建和 usage 创建位于同一数据库事务。修改密码时密码哈希更新和该用户全部 `auth_sessions` 删除位于同一事务。
+| 表 | 用途 | 关键边界 |
+| --- | --- | --- |
+| `comfy_bridges` | 保存用户注册的 Bridge 身份、Token 摘要、启用状态和心跳能力 | Token 明文只在注册时返回一次；查询和日志只使用摘要 |
+| `comfy_bridge_requests` | 保存云端任务交给本地 Bridge 的请求、领取状态和完成结果 | `id` 同时作为任务的 `provider_request_id`；状态按 `queued -> claimed -> succeeded/failed/cancelled` 单向流转 |
 
-## 资源与声音
+`comfy_bridge_requests` 是 Bridge 交接的真相源。后端进程重启后，未领取请求继续从数据库投递；已领取请求的迟到结果先落库，任务 worker 恢复后使用原请求 ID 读取结果，不会创建第二次本地工作流执行。请求有效期当前为两小时，过期的排队或执行记录会转为失败。
 
-- `resources.source_system`、`resources.deletion_policy`：迁移资源使用 `zq-media-studio` 和 `retain_shared`。
-- `voice_profiles.reference_text`、`voice_profiles.metadata_json`：保留声音样本对应文本和来源训练信息。
+请求表保存工作流执行 payload 和结果，但不保存 Bridge Token。任务取消时，未领取请求可以确定取消；已经领取的本机工作流无法可靠中止，迟到结果会被丢弃并进入费用核对流程。
 
-`retain_shared` 资源在业务删除时只删除影策引用，不删除 ZQ 共用 COS 对象。
+## ZQ 能力迁移与批量分发
 
-## 迁移控制面
+- `users.avatar_url`、`users.source_system` 保留迁移头像与来源；`invitation_codes` 和 `invitation_code_usages` 保存邀请码及一次性使用记录。
+- `resources.source_system`、`resources.deletion_policy` 将迁移资源标记为 `zq-media-studio` 与 `retain_shared`；删除时只清理影策引用，不删除共用 COS 对象。
+- `migration_runs`、`migration_entity_maps`、`migration_conflicts` 保存增量 watermark、稳定 ID 映射、校验和及人工冲突；增量读取使用重叠窗口并依赖唯一映射幂等。
+- `distribution_publications` 与 `distribution_outboxes` 原子创建，保存发布快照、幂等键、重试和终态。
+- `director_prompt_proposals` 保存导演候选及用户选择，只有已选择且未消费的 proposal 才能创建 storyboard session。
+- `task_batches`、`task_batch_items` 与 `tasks.batch_id/batch_item_id/batch_index` 保存最多 1000 项的持久批次；等待项不占活动任务并发，调度时仍经过现有路由、计费和 Worker 租约。
 
-- `migration_runs`：每次扫描的模式、watermark、统计、终态和错误。
-- `migration_entity_maps`：`source_system + entity_type + source_id` 唯一，保存目标 ID、源更新时间、校验和和迁移状态。
-- `migration_conflicts`：账号碰撞、父对象缺失等需要人工处理的问题。
-
-增量读取使用 `sys_update_datetime` 和重叠窗口；目标写入依赖稳定 ID 和唯一映射实现幂等。
-
-## 分发 outbox
-
-- `distribution_publications`：用户发起的发布快照和最终状态。
-- `distribution_outboxes`：唯一幂等键、尝试次数、下次尝试时间、终态和错误。
-
-publication 与 outbox 原子创建。发送成功后 outbox delivered 与 publication published 原子更新。
-
-## 导演选择
-
-- `director_prompt_proposals`：原文、两个候选、推荐项、用户选择、选择时间和消费会话。
-
-候选创建不创建任务。只有 `selected` 且尚未消费、项目和原文完全匹配的 proposal 才能创建 storyboard session。
-
-## 持久化生成批次
-
-- `task_batches`：保存用户、项目、逻辑模型任务模板、请求数量、幂等键、批次状态和各状态计数。
-- `task_batch_items`：为批次中的每个稳定序号保存等待、提交、排队、运行、成功、失败或取消状态，以及任务 ID、重试次数和短租约。
-- `tasks.batch_id`、`tasks.batch_item_id`、`tasks.batch_index`：将普通任务生命周期回链到批次项；`batch_item_id` 唯一，防止调度恢复时重复创建和重复扣费。
-
-等待批次项不进入 `tasks`，也不计入账号活动任务数。后台调度器只在 `activeTaskLimit` 有空位时将批次项提升为普通任务，提升后继续使用现有模型路由、计费预占、Worker 租约和素材持久化。批次请求只保存逻辑模型路由清理后的参数，不持久化浏览器提交的渠道地址、Header 或密钥。
+注册时邀请码计数、用户和 usage 位于同一事务；修改密码同时撤销该用户全部会话。批次请求只保存逻辑模型路由清理后的参数，不持久化浏览器提交的渠道地址、Header 或密钥。

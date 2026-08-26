@@ -571,7 +571,7 @@ export function useCanvasUpload({
                     || (targetNode.type === CanvasNodeType.Image && file.type.startsWith("image/"))
                     || (targetNode.type === CanvasNodeType.Video && file.type.startsWith("video/"))
                     || (targetNode.type === CanvasNodeType.Audio && isAudioFile(file))
-                    || ![CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio].includes(targetNode.type);
+                    || (targetNode.type !== CanvasNodeType.Image && targetNode.type !== CanvasNodeType.Video && targetNode.type !== CanvasNodeType.Audio);
                 if (!compatible) {
                     message.warning("请选择与当前节点相同类型的媒体文件");
                     return;
@@ -606,8 +606,13 @@ export function useCanvasUpload({
             void createImageAssetNode(asset, screenToCanvas(event.clientX, event.clientY));
             return;
         }
-        const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith("image/") || item.type.startsWith("video/") || isAudioFile(item));
-        if (!file) return;
+        const files = Array.from(event.dataTransfer.files).filter((item) => item.type.startsWith("image/") || item.type.startsWith("video/") || isAudioFile(item));
+        if (!files.length) return;
+        if (files.length > 1) {
+            void handleUploadFiles(files);
+            return;
+        }
+        const file = files[0];
         const position = screenToCanvas(event.clientX, event.clientY);
         const target = [...nodesRef.current].reverse().find((node) => {
             const compatible = (node.type === CanvasNodeType.Image && file.type.startsWith("image/"))
@@ -622,7 +627,7 @@ export function useCanvasUpload({
             return;
         }
         void (isAudioFile(file) ? createAudioFileNode(file, position) : file.type.startsWith("video/") ? createVideoFileNode(file, position) : createImageFileNode(file, position));
-    }, [createAudioFileNode, createImageAssetNode, createImageFileNode, createVideoFileNode, handleProjectChapterInsert, message, nodesRef, replaceNodeMedia, screenToCanvas]);
+    }, [createAudioFileNode, createImageAssetNode, createImageFileNode, createVideoFileNode, handleProjectChapterInsert, handleUploadFiles, message, nodesRef, replaceNodeMedia, screenToCanvas]);
 
     const handleFileDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
         if (!hasDraggedFiles(event)) return;

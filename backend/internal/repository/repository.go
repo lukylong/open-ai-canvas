@@ -503,7 +503,7 @@ func (r *Repository) CancelTaskIfStatus(userID string, id string, expected model
 	result := r.db.Model(&model.Task{}).
 		Where("id = ? AND user_id = ? AND status = ?", id, userID, expected).
 		Updates(map[string]any{
-			"status": model.TaskStatusCancelled, "stage": "任务已取消", "completed_at": &now,
+			"status": model.TaskStatusCancelled, "stage": "任务已取消", "error": "任务已取消", "completed_at": &now,
 			"lease_owner": "", "lease_expires_at": nil, "updated_at": now,
 		})
 	return result.RowsAffected == 1, result.Error
@@ -784,6 +784,32 @@ func (r *Repository) SaveSystemSettings(settings ...*model.SystemSetting) error 
 	})
 }
 
+func (r *Repository) ArkPrivateAssetBinding(resourceID string, projectName string) (*model.ArkPrivateAssetBinding, error) {
+	var binding model.ArkPrivateAssetBinding
+	if err := r.db.Where("resource_id = ? AND project_name = ?", resourceID, projectName).First(&binding).Error; err != nil {
+		return nil, err
+	}
+	return &binding, nil
+}
+
+// CreateArkPrivateAssetBinding establishes a single uploader for a resource
+// and Ark Project. Other workers can wait for that binding instead of
+// importing the same image repeatedly.
+func (r *Repository) CreateArkPrivateAssetBinding(binding *model.ArkPrivateAssetBinding) (bool, error) {
+	result := r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "resource_id"}, {Name: "project_name"}},
+		DoNothing: true,
+	}).Create(binding)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (r *Repository) SaveArkPrivateAssetBinding(binding *model.ArkPrivateAssetBinding) error {
+	return r.db.Save(binding).Error
+}
+
 func (r *Repository) DeleteSystemSetting(key string) error {
 	return r.db.Delete(&model.SystemSetting{}, "key = ?", key).Error
 }
@@ -927,7 +953,7 @@ func (r *Repository) UpsertAsset(asset *model.Asset) error {
 }
 
 func (r *Repository) DeleteAsset(userID string, id string) error {
-	return r.DeleteAssetAndResources(userID, id, nil)
+	return r.DeleteAssetAndResources(userID, id, nil, nil)
 }
 
 func (r *Repository) ReplaceAssets(userID string, assets []model.Asset) error {
@@ -973,7 +999,22 @@ func (r *Repository) UpsertCanvasProject(project *model.CanvasProject) error {
 }
 
 func (r *Repository) DeleteCanvasProject(userID string, id string) error {
-	return r.db.Delete(&model.CanvasProject{}, "id = ? AND user_id = ?", id, userID).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND project_id = ?", userID, id).Delete(&model.CanvasShare{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("canvas_id = ?", id).Delete(&model.CanvasUnitLink{}).Error; err != nil {
+			return err
+		}
+		// 任务和会话是审计记录，不随独立画布实体保留归属 ID，避免删除后继续挂住画布上下文。
+		if err := tx.Model(&model.Task{}).Where("user_id = ? AND project_id = ?", userID, id).Update("project_id", "").Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.Session{}).Where("user_id = ? AND project_id = ?", userID, id).Update("project_id", "").Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.CanvasProject{}, "id = ? AND user_id = ?", id, userID).Error
+	})
 }
 
 func (r *Repository) Projects(userID string) ([]model.Project, error) {
