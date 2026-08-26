@@ -7,7 +7,7 @@ import { motion } from "motion/react";
 import { modelDisplayName, modelIcon, normalizeModelOptionValue, resolveModelChannel, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
-import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@/services/api/image";
+import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall, type ToolChoice } from "@/services/api/image";
 import { logicalModelIDForConfig, runBackendToolGenerationTask } from "@/services/api/generation-task";
 import { imageToDataUrl } from "@/services/image-storage";
 import { isCanvasGenerationDurableAckError, persistCanvasCinematicSessionContinuationEffect } from "@/services/canvas-generation-consumer";
@@ -32,12 +32,14 @@ import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
 import { previewCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentOperationImpact, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { canvasAgentPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { resolveStoryboardGenerationContext } from "@/lib/canvas/canvas-storyboard-context";
+import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
+import { createDirectorPromptProposal, selectDirectorPromptProposal, type DirectorPromptProposal } from "@/services/api/projects";
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
 const ONLINE_AGENT_MAX_STEPS = 4;
 const ONLINE_AGENT_PROMPT =
-    "你是影策网页内置在线画布助手。当前画布 JSON 会随用户消息提供。首轮必须调用工具：只读问题调用 canvas_get_state，需要改动画布时调用和本地 Agent 一致的 infinite-canvas 工具。需要生成内容时直接调用 canvas_generate_text、canvas_generate_image、canvas_generate_video、canvas_generate_audio 或 canvas_create_generation_flow；需要精确批量操作时调用 canvas_apply_ops。不要输出 JSON ops，不要编造执行结果。工具参数涉及已有节点时必须使用当前画布 JSON 中真实存在的 id；缺少必要 id 或用户意图不明确时直接说明需要用户明确选择或说明，不要猜测。工具返回结果后，再根据真实结果回答用户。";
+    "你是影策网页内置在线画布助手。当前画布 JSON 会随用户消息提供。首轮必须调用工具：询问“怎么、如何、在哪里设置项目画风”等操作帮助时调用 canvas_get_project_style_guide，不得启动影视项目或生成分镜；其他只读问题调用 canvas_get_state，需要改动画布时调用和本地 Agent 一致的 infinite-canvas 工具。只有用户明确要求创建影视项目、剧本、场景或分镜时，才调用 canvas_create_cinematic_session。需要生成内容时直接调用 canvas_generate_text、canvas_generate_image、canvas_generate_video、canvas_generate_audio 或 canvas_create_generation_flow；需要精确批量操作时调用 canvas_apply_ops。不要输出 JSON ops，不要编造执行结果。工具参数涉及已有节点时必须使用当前画布 JSON 中真实存在的 id；缺少必要 id 或用户意图不明确时直接说明需要用户明确选择或说明，不要猜测。工具返回结果后，再根据真实结果回答用户。";
 const JSON_RECORD_SCHEMA = { type: "object", additionalProperties: true };
 const POSITION_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"], additionalProperties: false };
 const VIEWPORT_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, k: { type: "number" } }, required: ["x", "y", "k"], additionalProperties: false };
@@ -85,7 +87,7 @@ const CANVAS_OP_SCHEMA = {
     required: ["type"],
     additionalProperties: false,
 };
-const ONLINE_READ_TOOLS = new Set(["canvas_get_state", "canvas_get_selection", "canvas_export_snapshot"]);
+const ONLINE_READ_TOOLS = new Set(["canvas_get_state", "canvas_get_selection", "canvas_export_snapshot", CANVAS_PROJECT_STYLE_GUIDE_TOOL]);
 
 function toolDefinition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], strict = false): ResponseFunctionTool {
     return { type: "function", function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false }, strict } };
@@ -111,6 +113,7 @@ function generationToolDefinition(name: string, description: string, mode?: "tex
 
 const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     toolDefinition("canvas_get_state", "读取当前网页画布的节点、连线、选区和视口。", {}),
+    toolDefinition(CANVAS_PROJECT_STYLE_GUIDE_TOOL, "读取当前项目画风状态，并返回项目画布与独立画布的准确设置入口和操作步骤。仅用于询问如何、在哪里设置画风的帮助问题。", {}),
     toolDefinition("canvas_get_selection", "读取当前网页画布选中的节点。", {}),
     toolDefinition("canvas_export_snapshot", "导出当前画布快照，用于理解布局。", {}),
     toolDefinition(
@@ -193,6 +196,15 @@ type OnlineLoopContext = { step: number };
 type OnlineToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
 type OnlineExecutedToolCall = { toolCallId: string; name: string; result: OnlineToolResult };
 type PendingOnlineToolContext = { messages: ResponseInputMessage[]; toolCalls: ResponseToolCall[]; assistantId: string; step: number };
+type AssistantSessionState = { sessions: CanvasAssistantSession[]; activeSessionId: string | null };
+type PendingDirectorChoice = {
+    proposal: DirectorPromptProposal;
+    selectedKey: DirectorPromptProposal["recommendedKey"];
+    submitting: boolean;
+    error?: string;
+    resolve: (proposalId: string) => void;
+    reject: (error: Error) => void;
+};
 
 type CanvasAssistantPanelProps = {
     nodes: CanvasNodeData[];
@@ -321,6 +333,7 @@ export function CanvasAssistantPanel({
     const [cinematicEntryActive, setCinematicEntryActive] = useState(cinematicEntry);
     const [isRunning, setIsRunning] = useState(false);
     const [deleteChatIds, setDeleteChatIds] = useState<string[]>([]);
+    const [directorChoice, setDirectorChoice] = useState<PendingDirectorChoice | null>(null);
     const [onlineLogs, setOnlineLogs] = useState<OnlineAgentLog[]>([]);
     const [removedReferenceIds, setRemovedReferenceIds] = useState<Set<string>>(new Set());
     const [localSessions, setLocalSessions] = useState<CanvasAssistantSession[]>(() => (sessions.length ? sessions : [createSession()]));
@@ -332,15 +345,65 @@ export function CanvasAssistantPanel({
         setLocalActiveSessionIdState(activeId);
     };
     const applyingExternalSessionsRef = useRef(false);
+    const lastEmittedSessionStateRef = useRef<AssistantSessionState>({ sessions, activeSessionId });
     const chatListRef = useRef<HTMLDivElement>(null);
     const snapshotRef = useRef(snapshot);
     const pendingToolContextRef = useRef(new Map<string, PendingOnlineToolContext>());
+    const onlineToolApprovalIdsRef = useRef(new Set<string>());
     const cinematicSessionControllersRef = useRef(new Map<string, AbortController>());
     const generationConsumerControllerRef = useRef(new AbortController());
 
+    const chooseDirectorPrompt = async (sourceText: string, signal: AbortSignal) => {
+        const { proposal } = await createDirectorPromptProposal({ projectId, sourceText });
+        if (signal.aborted) throw new DOMException("The operation was aborted", "AbortError");
+        return new Promise<string>((resolve, reject) => {
+            const abort = () => {
+                setDirectorChoice(null);
+                reject(new DOMException("The operation was aborted", "AbortError") as unknown as Error);
+            };
+            signal.addEventListener("abort", abort, { once: true });
+            setDirectorChoice({
+                proposal,
+                selectedKey: proposal.recommendedKey,
+                submitting: false,
+                resolve: (id) => {
+                    signal.removeEventListener("abort", abort);
+                    resolve(id);
+                },
+                reject: (error) => {
+                    signal.removeEventListener("abort", abort);
+                    reject(error);
+                },
+            });
+        });
+    };
+
+    const cancelDirectorChoice = () => {
+        const pending = directorChoice;
+        setDirectorChoice(null);
+        pending?.reject(new Error("已取消导演方案选择"));
+    };
+
+    const confirmDirectorChoice = async () => {
+        const pending = directorChoice;
+        if (!pending || pending.submitting) return;
+        setDirectorChoice({ ...pending, submitting: true });
+        try {
+            const { proposal } = await selectDirectorPromptProposal(pending.proposal.id, pending.selectedKey);
+            setDirectorChoice(null);
+            pending.resolve(proposal.id);
+        } catch (error) {
+            setDirectorChoice({ ...pending, submitting: false, error: error instanceof Error ? error.message : "导演方案提交失败，请重试" });
+        }
+    };
+
     useEffect(() => {
         if (!sessions.length) return;
-        if (sessions === localSessions && activeSessionId === localActiveSessionId) return;
+        if (!shouldApplyExternalAssistantSessionState(
+            { sessions, activeSessionId },
+            { sessions: localSessions, activeSessionId: localActiveSessionId },
+            lastEmittedSessionStateRef.current,
+        )) return;
         applyingExternalSessionsRef.current = true;
         localSessionsRef.current = sessions;
         setLocalSessions(sessions);
@@ -367,6 +430,7 @@ export function CanvasAssistantPanel({
             return;
         }
         if (sessions === localSessions && activeSessionId === localActiveSessionId) return;
+        lastEmittedSessionStateRef.current = { sessions: localSessions, activeSessionId: localActiveSessionId };
         onSessionsChange(localSessions, localActiveSessionId);
     }, [activeSessionId, localActiveSessionId, localSessions, onSessionsChange, sessions]);
 
@@ -513,8 +577,12 @@ export function CanvasAssistantPanel({
         let backendSessionId = "";
         cinematicSessionControllersRef.current.set(requestKey, controller);
         try {
+            // The backend session is created only after the user explicitly
+            // compares and selects one of the two director approaches.
+            const directorProposalId = await chooseDirectorPrompt(text, controller.signal);
             const detail = await createCinematicAgentSession(
                 {
+                    directorProposalId,
                     projectId,
                     prompt: text,
                     canvasSnapshot: compactSnapshot(current) as unknown as Record<string, unknown>,
@@ -579,8 +647,8 @@ export function CanvasAssistantPanel({
     };
 
     const sendMessage = async (text: string, history: CanvasAssistantMessage[], savedReferences?: CanvasAssistantReference[]) => {
-        const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
-        if (!isAiConfigReady(requestConfig, requestConfig.model)) {
+        const selectedConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
+        if (!isAiConfigReady(selectedConfig, selectedConfig.model)) {
             navigateToSettings({ continueCreation: true });
             return;
         }
@@ -597,21 +665,44 @@ export function CanvasAssistantPanel({
         appendMessage(session.id, userMessage);
         addOnlineLog("发送请求", { text, selectedNodeIds: snapshotRef.current.selectedNodeIds, nodeCount: snapshotRef.current.nodes.length, connectionCount: snapshotRef.current.connections.length });
         setPrompt("");
+        try {
+            const requestConfig = resolveOnlineAgentRequestConfig(effectiveConfig);
+            if (requestConfig.textModel && requestConfig.textModel !== effectiveConfig.textModel) updateConfig("textModel", requestConfig.textModel);
+        } catch (error) {
+            const text = error instanceof Error ? error.message : "网站 Agent 文本模型不可用";
+            addOnlineLog("请求失败", text);
+            appendMessage(session.id, { id: nanoid(), role: "error", title: "操作失败", text });
+            return;
+        }
         setIsRunning(true);
         void runOnlineAgentStep(session.id, assistantId, history, userMessage, { step: 1 });
     };
 
     const runOnlineAgentStep = async (sessionId: string, assistantId: string, history: CanvasAssistantMessage[], userMessage: CanvasAssistantMessage, loop: OnlineLoopContext) => {
-        const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
         try {
             setIsRunning(true);
+            const requestConfig = resolveOnlineAgentRequestConfig(effectiveConfig);
             const messages = await buildToolAgentMessages(snapshotRef.current, history, userMessage);
-            addOnlineLog(`Agent Tool Loop ${loop.step} 开始`, { toolChoice: "required" });
+            const toolChoice = resolveOnlineAgentFirstToolChoice(userMessage.text);
+            addOnlineLog(`Agent Tool Loop ${loop.step} 开始`, { toolChoice });
             let streamed = "";
-            const result = await requestOnlineAgentModel({ ...requestConfig, systemPrompt: "" }, messages, "required", userMessage.text, (text) => {
+            const modelResult = await requestOnlineAgentModel({ ...requestConfig, systemPrompt: "" }, messages, toolChoice, userMessage.text, (text) => {
                 streamed = text;
                 if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
-            }, canvasAgentPromptCacheKey(sessionId));
+            }, canvasAgentPromptCacheKey(sessionId), projectId);
+            // Some upstreams reject an exact tool_choice and retry with auto. Keep
+            // help intent deterministic so it can never fall through to cinematic generation.
+            const result = typeof toolChoice === "object"
+                ? {
+                    ...modelResult,
+                    content: "",
+                    toolCalls: [modelResult.toolCalls.find((call) => call.function.name === toolChoice.name) || {
+                        id: `style-guide-${nanoid()}`,
+                        type: "function" as const,
+                        function: { name: toolChoice.name, arguments: "{}" },
+                    }],
+                }
+                : modelResult;
             addOnlineLog("模型工具回复", result);
             if (result.toolCalls.length) {
                 const writableCalls = result.toolCalls.filter(isWritableToolCall);
@@ -655,6 +746,11 @@ export function CanvasAssistantPanel({
             text: toolResults.map((item) => toolResultText(item.result)).join("\n"),
             detail: { status: "completed", step, toolCalls: result.toolCalls, results: toolResults },
         });
+        if (toolResults.length === 1 && toolResults[0].name === CANVAS_PROJECT_STYLE_GUIDE_TOOL && toolResults[0].result.ok) {
+            upsertMessage(sessionId, { id: assistantId, role: "assistant", text: toolResults[0].result.message });
+            addOnlineLog(`Agent Tool Loop ${step} 结束`, { reply: toolResults[0].result.message });
+            return;
+        }
         await continueOnlineToolLoopAfterResults(sessionId, assistantId, messages, result.toolCalls, toolResults, step);
     };
 
@@ -665,12 +761,12 @@ export function CanvasAssistantPanel({
             addOnlineLog("Agent Tool Loop 达到步数上限", { maxSteps: ONLINE_AGENT_MAX_STEPS });
             return;
         }
-        const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
+        const requestConfig = resolveOnlineAgentRequestConfig(effectiveConfig);
         let streamed = "";
         const next = await requestOnlineAgentModel({ ...requestConfig, systemPrompt: "" }, nextMessages, "auto", "继续处理画布工具结果", (text) => {
             streamed = text;
             if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
-        }, canvasAgentPromptCacheKey(sessionId));
+        }, canvasAgentPromptCacheKey(sessionId), projectId);
         addOnlineLog(`Agent Tool Loop ${step + 1} 回复`, next);
         if (next.toolCalls.length) {
             const writableCalls = next.toolCalls.filter(isWritableToolCall);
@@ -709,6 +805,10 @@ export function CanvasAssistantPanel({
         const current = snapshotRef.current;
         try {
             if (name === "canvas_get_state") return { ok: true, message: describeCanvasSnapshot(current), data: compactSnapshot(current) };
+            if (name === CANVAS_PROJECT_STYLE_GUIDE_TOOL) {
+                const message = projectStyleSetupGuide(current.nodes);
+                return { ok: true, message, data: { configured: current.nodes.some((node) => node.metadata?.workflowKind === "styleboard" && Boolean(node.metadata?.stylePresetId)) } };
+            }
             if (name === "canvas_export_snapshot") return { ok: true, message: describeCanvasSnapshot(current), data: compactSnapshot(current) };
             if (name === "canvas_get_selection") {
                 const ids = new Set(current.selectedNodeIds || []);
@@ -777,35 +877,55 @@ export function CanvasAssistantPanel({
     const approveOnlineTool = async (messageId: string) => {
         const message = safeSessions.flatMap((session) => session.messages).find((item) => item.id === messageId);
         const detail = objectDetail(message?.detail);
-        const pendingContext = pendingToolContextRef.current.get(messageId);
-        const toolCalls = pendingContext?.toolCalls || toolCallsFromDetail(detail);
-        const previousMessages = pendingContext?.messages || [];
         const session = safeSessions.find((session) => session.messages.some((item) => item.id === messageId));
-        addOnlineLog("批准工具", { messageId, toolCalls });
-        const assistantId = pendingContext?.assistantId || "";
         if (!session) return;
-        if (!toolCalls.length || !previousMessages.length || !assistantId) {
-            upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行失败", text: "工具上下文不完整，无法执行。", detail: { ...detail, status: "failed" } });
+        const pendingContext = claimOnlineToolApproval(pendingToolContextRef.current, onlineToolApprovalIdsRef.current, messageId);
+        if (!pendingContext) {
+            addOnlineLog("忽略重复批准", { messageId });
             return;
         }
+        const { toolCalls, messages: previousMessages, assistantId } = pendingContext;
+        addOnlineLog("批准工具", { messageId, toolCalls });
+        upsertMessage(session.id, {
+            id: messageId,
+            role: "tool",
+            title: "工具执行中",
+            text: "已批准，正在执行工具调用。",
+            detail: { ...detail, status: "executing" },
+        });
+        let toolExecutionCompleted = false;
         try {
             setIsRunning(true);
             const results = await executeOnlineToolCalls(session.id, toolCalls);
+            toolExecutionCompleted = true;
             addOnlineLog("工具执行结果", results);
             upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行完成", text: results.map((item) => toolResultText(item.result)).join("\n"), detail: { ...detail, results, status: "completed" } });
-            pendingToolContextRef.current.delete(messageId);
             await continueOnlineToolLoopAfterResults(session.id, assistantId, previousMessages, toolCalls, results, pendingContext?.step || Number(detail.step) || 1);
         } catch (error) {
-            if (isAgentSessionPollingAbort(error)) return;
+            if (isAgentSessionPollingAbort(error)) {
+                if (!toolExecutionCompleted) {
+                    upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行已中止", text: "本次工具执行已中止；已提交的生成任务不会自动重复提交。", detail: { ...detail, status: "cancelled" } });
+                }
+                return;
+            }
             addOnlineLog("工具续跑失败", error instanceof Error ? error.message : error);
-            appendMessage(session.id, { id: nanoid(), role: "error", title: "操作失败", text: error instanceof Error ? error.message : "操作失败" });
+            if (toolExecutionCompleted) {
+                appendMessage(session.id, { id: nanoid(), role: "error", title: "继续处理失败", text: error instanceof Error ? error.message : "工具已执行，但后续处理失败" });
+            } else {
+                upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行失败", text: error instanceof Error ? error.message : "工具执行失败", detail: { ...detail, status: "failed" } });
+            }
         } finally {
+            onlineToolApprovalIdsRef.current.delete(messageId);
             setIsRunning(false);
         }
     };
 
     const rejectOnlineTool = (messageId: string) => {
         const session = safeSessions.find((session) => session.messages.some((item) => item.id === messageId));
+        if (onlineToolApprovalIdsRef.current.has(messageId) || !pendingToolContextRef.current.has(messageId)) {
+            addOnlineLog("忽略已处理的工具决定", { messageId });
+            return;
+        }
         addOnlineLog("拒绝工具", { messageId });
         pendingToolContextRef.current.delete(messageId);
         if (session) upsertMessage(session.id, { id: messageId, role: "tool", title: "已拒绝执行", text: "工具调用已取消", detail: { ...objectDetail(session.messages.find((item) => item.id === messageId)?.detail), status: "rejected" } });
@@ -1089,6 +1209,46 @@ export function CanvasAssistantPanel({
                     />
                 </>
             ) : null}
+
+            <Modal
+                title="选择专业导演扩写方案"
+                open={Boolean(directorChoice)}
+                centered
+                width={720}
+                closable={!directorChoice?.submitting}
+                maskClosable={false}
+                onCancel={cancelDirectorChoice}
+                footer={
+                    <>
+                        <Button disabled={directorChoice?.submitting} onClick={cancelDirectorChoice}>取消</Button>
+                        <Button type="primary" loading={directorChoice?.submitting} onClick={() => void confirmDirectorChoice()}>使用所选方案并开始分镜</Button>
+                    </>
+                }
+            >
+                <p className="mb-4 text-sm opacity-60">选择前不会创建生成任务或扣费。推荐仅供参考，原始内容会与选择记录一起保留。</p>
+                {directorChoice?.error ? <p className="mb-4 rounded-md bg-red-500/10 px-3 py-2 text-xs text-red-500">{directorChoice.error}</p> : null}
+                <div className="grid gap-3 md:grid-cols-2">
+                    {(directorChoice?.proposal.candidates || []).map((candidate) => {
+                        const selected = directorChoice?.selectedKey === candidate.key;
+                        return (
+                            <button
+                                key={candidate.key}
+                                type="button"
+                                className="rounded-xl border p-4 text-left transition"
+                                style={{ borderColor: selected ? theme.accent.primary : theme.toolbar.border, background: selected ? theme.accent.primarySoft : theme.spatial.surface }}
+                                onClick={() => setDirectorChoice((current) => current ? { ...current, selectedKey: candidate.key } : current)}
+                            >
+                                <span className="flex items-center justify-between gap-3 text-sm font-semibold">
+                                    {candidate.name}
+                                    {candidate.recommended ? <span className="rounded-full px-2 py-0.5 text-[var(--fs-label)]" style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}>推荐</span> : null}
+                                </span>
+                                <span className="mt-2 block text-xs leading-5 opacity-65">{candidate.summary}</span>
+                                <span className="mt-3 block max-h-28 overflow-y-auto whitespace-pre-wrap text-[var(--fs-label)] leading-5 opacity-50">{candidate.prompt}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+            </Modal>
 
             <Modal
                 title="删除对话记录？"
@@ -1564,23 +1724,13 @@ function isWritableToolCall(call: ResponseToolCall) {
     return !ONLINE_READ_TOOLS.has(call.function.name);
 }
 
-function toolCallsFromDetail(detail: Record<string, unknown>): ResponseToolCall[] {
-    return Array.isArray(detail.toolCalls) ? (detail.toolCalls.filter(isResponseToolCall) as ResponseToolCall[]) : [];
-}
-
-function isResponseToolCall(value: unknown): value is ResponseToolCall {
-    const item = objectDetail(value);
-    const fn = objectDetail(item.function);
-    return typeof item.id === "string" && item.type === "function" && typeof fn.name === "string" && typeof fn.arguments === "string";
-}
-
 function toolCallToResponseInput(call: ResponseToolCall): ResponseInputMessage {
     return { type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments, ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}) };
 }
 
-async function requestOnlineAgentModel(config: AiConfig, messages: ResponseInputMessage[], toolChoice: "auto" | "required", prompt: string, onDelta: (text: string) => void, promptCacheKey?: string) {
+async function requestOnlineAgentModel(config: AiConfig, messages: ResponseInputMessage[], toolChoice: ToolChoice, prompt: string, onDelta: (text: string) => void, promptCacheKey: string | undefined, projectId: string) {
     if (logicalModelIDForConfig(config)) {
-        const result = await runBackendToolGenerationTask({ prompt, config, messages, tools: ONLINE_AGENT_TOOLS, toolChoice });
+        const result = await runBackendToolGenerationTask({ projectId, prompt, config, messages, tools: ONLINE_AGENT_TOOLS, toolChoice });
         if (result.content.trim()) onDelta(result.content);
         return result;
     }
@@ -1618,6 +1768,7 @@ function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: CanvasAgent
 function toolCallLabel(name: string) {
     if (name === "canvas_apply_ops") return "画布操作";
     if (name === "canvas_get_state") return "读取画布";
+    if (name === CANVAS_PROJECT_STYLE_GUIDE_TOOL) return "读取画风设置说明";
     if (name === "canvas_get_selection") return "读取选区";
     if (name === "canvas_export_snapshot") return "导出快照";
     if (name === "canvas_create_cinematic_session") return "创建影视项目";

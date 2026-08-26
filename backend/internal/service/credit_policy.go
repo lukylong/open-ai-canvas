@@ -120,6 +120,12 @@ func (s *Service) ensureSignupBonus(userID string) error {
 	return err
 }
 
+// GrantSignupBonusForMigratedUser uses the same idempotency key as normal signup.
+// The migration command calls it after every account upsert so an interrupted run can safely resume.
+func (s *Service) GrantSignupBonusForMigratedUser(userID string) error {
+	return s.ensureSignupBonus(userID)
+}
+
 func (s *Service) CheckinCredits(user *model.User) (*model.CreditAccount, bool, error) {
 	if user == nil {
 		return nil, false, Unauthorized("请先登录")

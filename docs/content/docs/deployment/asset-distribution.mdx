@@ -1,0 +1,19 @@
+---
+title: 素材分发连接
+description: 影策手动发布到独立素材分发平台
+---
+
+# 素材分发连接
+
+目标系统先启用外部素材同步，并配置 `ASSET_SYNC_KEY_ID`、`ASSET_SYNC_SECRET`。为复用既有 ZQ 分发合同且不切断旧工作台，影策默认继续发送来源 `zq-media-studio`；如果目标系统已经为影策建立独立来源，再同时修改目标允许来源和 `CANVAS_DISTRIBUTION_SOURCE`。
+
+```dotenv
+CANVAS_DISTRIBUTION_URL=https://目标域名/api/integrations/asset-sync/v1/resources
+CANVAS_DISTRIBUTION_KEY_ID=与目标系统一致
+CANVAS_DISTRIBUTION_SECRET=与目标系统一致
+CANVAS_DISTRIBUTION_SOURCE=zq-media-studio
+```
+
+用户可在素材库切换“系列/素材”视图，从单素材菜单、已选素材批量栏或系列详情手动发布；前端每 1000 个素材分片，后端每项独立幂等入队并返回部分失败明细。目标平台收到 `series_id`、`series_type`、`series_label`，批量系列还会收到 `batch_id`。用户在“分发记录”抽屉查看状态、重试失败记录或取消待处理记录。创建素材、生成任务和 ZQ 增量迁移都不会自动发布。
+
+每个发布快照和 outbox 在同一事务创建。请求使用时间戳、随机 nonce 与 HMAC-SHA256；相同资产版本和元数据复用同一 event ID。目标返回 HTTP 2xx 且业务字段 `code=1`、`data.error=0` 后才标记已发布；409 作为冲突失败处理。

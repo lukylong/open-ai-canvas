@@ -16,6 +16,7 @@ export type ModelRequirements = {
     videoSeconds?: string;
     imageSize?: string;
     options?: Record<string, unknown>;
+    allowMissingInputs?: boolean;
 };
 
 export type DisplayModelGroup = {
@@ -125,7 +126,7 @@ function logicalModelCompatibilityError(spec: NonNullable<NonNullable<AiConfig["
     for (const [kind, count] of Object.entries(counts)) {
         const constraint = spec.inputs?.[kind];
         if (!constraint && count > 0) return `不支持${kind}输入`;
-        if (constraint && (count < constraint.min || count > constraint.max)) return `${kind}输入需为 ${constraint.min}-${constraint.max} 个`;
+        if (constraint && ((!requirements.allowMissingInputs && count < constraint.min) || count > constraint.max)) return `${kind}输入需为 ${constraint.min}-${constraint.max} 个`;
     }
     const operation = requirements.capability === "video" && input ? resolveVideoOperation(input, requirements.videoOperation) : requirements.videoOperation;
     if (operation && spec.operations?.length && !spec.operations.includes(operation)) return "不支持当前生成模式";

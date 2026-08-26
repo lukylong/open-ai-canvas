@@ -10,9 +10,19 @@ import (
 	"infinite-canvas/backend/internal/repository"
 )
 
-// CreateTask 收敛任务进入系统前的 admission 流程：输入标准化、逻辑模型路由、
-// 能力/额度校验和持久化。执行阶段由 worker 与 provider 相关模块负责。
 func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task, error) {
+	return s.createTask(userID, req, nil)
+}
+
+type taskBatchLink struct {
+	BatchID string
+	ItemID  string
+	Index   int
+}
+
+// createTask 收敛任务进入系统前的 admission 流程：输入标准化、逻辑模型路由、
+// 能力/额度校验和持久化。批次调度只通过 link 注入服务端归属，普通 HTTP 请求不能伪造。
+func (s *Service) createTask(userID string, req CreateTaskRequest, link *taskBatchLink) (*model.Task, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
 		return nil, errors.New("prompt is required")
@@ -63,9 +73,14 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		return nil, err
 	}
 	if activeTasks >= int64(policy.Task.ActiveTaskLimit) {
-		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
+		return nil, WrapAppError(400, fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit), repository.ErrActiveTaskLimit)
 	}
 	task := model.Task{ID: newID(), UserID: userID, SessionID: req.SessionID, ProjectID: req.ProjectID, Type: taskType, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
+	if link != nil {
+		task.BatchID = link.BatchID
+		task.BatchItemID = &link.ItemID
+		task.BatchIndex = link.Index
+	}
 	if routed != nil {
 		task.LogicalModelID = routed.LogicalModel.ID
 		task.LogicalModelRevisionID = routed.Revision.ID
@@ -95,10 +110,10 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	}
 	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
 	if errors.Is(err, repository.ErrActiveTaskLimit) {
-		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
+		return nil, WrapAppError(400, fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit), repository.ErrActiveTaskLimit)
 	}
 	if errors.Is(err, repository.ErrInsufficientCredits) {
-		return nil, BadAuthRequest("积分不足，请先使用兑换码充值")
+		return nil, WrapAppError(400, "积分不足，请先使用兑换码充值", repository.ErrInsufficientCredits)
 	}
 	if errors.Is(err, repository.ErrLogicalModelUnavailable) {
 		return nil, BadAuthRequest("所选模型已停用、归档或配置已更新，请重新选择")

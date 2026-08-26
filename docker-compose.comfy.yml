@@ -1,0 +1,25 @@
+services:
+  backend:
+    environment:
+      # The adapter is the only private model host required by this overlay.
+      CANVAS_ALLOW_PRIVATE_UPSTREAMS: "false"
+      CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-comfy-adapter}
+    depends_on:
+      comfy-adapter:
+        condition: service_healthy
+
+  comfy-adapter:
+    image: open-ai-canvas-comfy-adapter:local
+    build:
+      context: ./comfy-adapter
+    environment:
+      COMFY_ADAPTER_TOKEN: ${COMFY_ADAPTER_TOKEN:?请配置 ComfyUI 适配器令牌}
+      COMFY_URL: ${COMFY_URL:-http://host.docker.internal:8188}
+      COMFY_API_KEY: ${COMFY_API_KEY:-}
+      COMFY_PROVIDERS_JSON: ${COMFY_PROVIDERS_JSON:-}
+      COMFY_INPUT_HOST_ALLOWLIST: ${COMFY_INPUT_HOST_ALLOWLIST:-}
+    expose:
+      - "8090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

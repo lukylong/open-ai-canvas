@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { App, Button, Descriptions, Drawer, Empty, Progress, Skeleton, Tabs } from "antd";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useNavigate } from "react-router";
 
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { formatCredits } from "@/constant/credits";
@@ -10,6 +11,7 @@ import type { CreditLedgerEntry } from "@/services/api/wallet";
 
 export function AdminUserDetailDrawer({ userId, onClose, previousUserId, nextUserId, onNavigate }: { userId: string | null; onClose: () => void; previousUserId?: string; nextUserId?: string; onNavigate?: (userId: string) => void }) {
     const { message } = App.useApp();
+    const navigate = useNavigate();
     const [detail, setDetail] = useState<AdminUserDetail | null>(null);
     const [ledger, setLedger] = useState<CreditLedgerEntry[]>([]);
     const [tasks, setTasks] = useState<AdminUserTask[]>([]);
@@ -135,6 +137,7 @@ export function AdminUserDetailDrawer({ userId, onClose, previousUserId, nextUse
                                             </div>
                                         ))}
                                     </div>
+                                    <Button onClick={() => navigate(`/admin/generated-content?userId=${encodeURIComponent(detail.user.id)}`)}>查看该用户的生成内容</Button>
                                     <div>
                                         <div className="mb-3 text-sm font-medium">资源与配额占用</div>
                                         <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">

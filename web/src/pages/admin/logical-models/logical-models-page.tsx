@@ -278,6 +278,11 @@ export default function LogicalModelsPage() {
     return (
         <AdminPageFrame
             title="前台模型目录"
+            actions={
+                <Button type="primary" icon={<Plus className="size-4" />} onClick={() => openModel()}>
+                    新增前台模型
+                </Button>
+            }
         >
             <AdminDataTable
                 toolbar={
@@ -310,7 +315,20 @@ export default function LogicalModelsPage() {
                     setPage(1);
                 }}
                 table={{ className: "admin-logical-model-table", rowKey: "id", size: "small", loading, pagination: false, columns: modelColumns, dataSource: paginatedModels, scroll: { x: 980 } }}
-                empty={<AdminTableEmpty filtered={Boolean(deferredKeyword)} title="暂无模型" />}
+                empty={
+                    <AdminTableEmpty
+                        filtered={Boolean(deferredKeyword)}
+                        title="暂无模型"
+                        description={deferredKeyword ? undefined : "前台模型负责创作端展示，并关联系统渠道中已配置的供应模型。"}
+                        action={
+                            deferredKeyword ? undefined : (
+                                <Button type="primary" icon={<Plus className="size-4" />} onClick={() => openModel()}>
+                                    新增前台模型
+                                </Button>
+                            )
+                        }
+                    />
+                }
                 footer={
                     <PaginationBar
                         alwaysShow

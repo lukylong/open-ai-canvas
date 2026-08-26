@@ -1,0 +1,34 @@
+---
+title: 持久化生成批次
+description: 1 至 1000 个图片或视频任务的后台队列、接口与恢复语义
+---
+
+# 持久化生成批次
+
+创建页的“批量生成数量”表示总任务数，不是供应商一次请求的原生输出数。平台模型批次上限来自 `runtime_policy.task.batchMaxCount`，默认和最大值均为 1000；同时排队或运行的普通任务数仍由 `activeTaskLimit` 控制。
+
+## 接口
+
+```text
+POST /api/task-batches
+GET  /api/task-batches
+GET  /api/task-batches/:id
+POST /api/task-batches/:id/pause
+POST /api/task-batches/:id/resume
+POST /api/task-batches/:id/cancel
+POST /api/task-batches/:id/retry-failed
+```
+
+创建请求包含稳定 `idempotencyKey`、`count` 和一个逻辑模型 `task` 模板。服务端校验数量、项目归属、模型能力和资源引用，随后原子创建批次及稳定序号项。重复的用户级幂等键返回原批次。
+
+## 调度和恢复
+
+1. `waiting` 项由批次调度器使用短租约领取。
+2. 账号有活动任务空位时，批次项提升为普通 `queued` 任务。
+3. 普通 Worker 执行模型路由、计费和结果素材化。
+4. 批次对账任务将普通任务终态同步回批次计数。
+5. 浏览器关闭和服务重启不会删除等待项；创建页使用批次 ID 恢复进度和已完成素材。
+
+暂停只停止新项目提升，已运行任务继续完成。“取消”只取消等待项，已经进入普通任务生命周期的调用继续等待真实终态。失败项重试沿用原任务计费检查；没有创建过普通任务的失败项重新进入等待队列。
+
+本地即梦 CLI 和浏览器自定义渠道仍保留单次 15 个任务的客户端边界；1 至 1000 的持久化队列要求使用后台配置的平台逻辑模型，包括接入平台渠道的 ComfyUI 工作流。

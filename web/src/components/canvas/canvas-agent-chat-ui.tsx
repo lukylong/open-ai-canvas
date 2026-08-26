@@ -39,7 +39,8 @@ export function AgentChatMessage({ item, theme, user, isStreaming = false, onRej
         );
     }
     if (item.role === "tool") {
-        if (objectField(item.detail, "status") === "pending") return <AgentPendingToolCard summary={item.text} detail={item.detail} theme={theme} onReject={() => onRejectTool?.(item.id)} onApprove={() => onApproveTool?.(item.id)} />;
+        const status = objectField(item.detail, "status");
+        if (status === "pending" || status === "executing") return <AgentPendingToolCard summary={item.text} detail={item.detail} theme={theme} approving={status === "executing"} onReject={() => onRejectTool?.(item.id)} onApprove={() => onApproveTool?.(item.id)} />;
         return (
             <div className="flex items-start gap-2.5">
                 <AgentAvatar theme={theme} />
@@ -60,7 +61,7 @@ export function AgentChatMessage({ item, theme, user, isStreaming = false, onRej
     );
 }
 
-export function AgentPendingToolCard({ summary, detail, theme, onReject, onApprove }: { summary: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onReject?: () => void; onApprove?: () => void }) {
+export function AgentPendingToolCard({ summary, detail, theme, approving = false, onReject, onApprove }: { summary: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; approving?: boolean; onReject?: () => void; onApprove?: () => void }) {
     const impact = agentImpactFromDetail(detail);
     return (
         <div className="flex items-start gap-2.5">
@@ -68,12 +69,12 @@ export function AgentPendingToolCard({ summary, detail, theme, onReject, onAppro
             <div className="min-w-0 flex-1 rounded-md p-3.5" style={{ background: "rgba(217,119,6,.07)", color: theme.node.text }}>
                 <div className="flex items-start gap-3">
                     <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md" style={{ color: "#d97706", background: "rgba(217,119,6,.1)" }}>
-                        <CircleAlert className="size-4" />
+                        {approving ? <LoaderCircle className="size-4 animate-spin" /> : <CircleAlert className="size-4" />}
                     </span>
                     <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 text-sm font-semibold leading-5">
                             <span>确认工具调用</span>
-                            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[var(--fs-label)] font-medium" style={{ color: "#d97706", background: "rgba(217,119,6,.1)" }}>等待确认</span>
+                            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[var(--fs-label)] font-medium" style={{ color: "#d97706", background: "rgba(217,119,6,.1)" }}>{approving ? "执行中" : "等待确认"}</span>
                         </div>
                         <div className="mt-2 text-sm leading-6" style={{ color: theme.node.text }}>{summary}</div>
                     </div>
@@ -93,11 +94,11 @@ export function AgentPendingToolCard({ summary, detail, theme, onReject, onAppro
                 {detail ? <details className="mt-3 pt-1"><summary className="cursor-pointer text-xs" style={{ color: theme.node.muted }}>技术详情</summary><AgentDetailBlock detail={detail} theme={theme} /></details> : null}
                 {onReject || onApprove ? (
                     <div className="mt-4 grid grid-cols-2 gap-2">
-                        <Button danger className="!h-9" icon={<XCircle className="size-4" />} onClick={() => onReject?.()}>
+                        <Button danger className="!h-9" disabled={approving} icon={<XCircle className="size-4" />} onClick={() => onReject?.()}>
                             拒绝执行
                         </Button>
-                        <Button className="!h-9" icon={<CheckCircle2 className="size-4" />} style={{ borderColor: "rgba(22,163,74,.42)", color: "#16a34a", background: "transparent" }} onClick={() => onApprove?.()}>
-                            批准执行
+                        <Button className="!h-9" disabled={approving} loading={approving} icon={approving ? undefined : <CheckCircle2 className="size-4" />} style={{ borderColor: "rgba(22,163,74,.42)", color: "#16a34a", background: "transparent" }} onClick={() => onApprove?.()}>
+                            {approving ? "执行中" : "批准执行"}
                         </Button>
                     </div>
                 ) : null}

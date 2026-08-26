@@ -2,6 +2,7 @@
 out/
 node_modules/
 docs/*
+!docs/content/
 !docs/design/
 !docs/index.md
 .env*

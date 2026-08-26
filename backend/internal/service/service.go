@@ -52,16 +52,17 @@ const taskWorkerConcurrency = 3
 const taskLogPayloadLimit = 4000
 
 type CreateSessionRequest struct {
-	ProjectID      string                    `json:"projectId"`
-	Prompt         string                    `json:"prompt"`
-	CanvasSnapshot map[string]any            `json:"canvasSnapshot"`
-	References     []string                  `json:"references"`
-	Requirements   string                    `json:"requirements"`
-	CanvasAssets   []storyboardAsset         `json:"canvasAssets"`
-	ProjectStyle   storyboardProjectStyle    `json:"projectStyle"`
-	Characters     []storyboardCharacterCard `json:"characters"`
-	Config         providerConfig            `json:"config"`
-	LogicalModelID string                    `json:"logicalModelId"`
+	DirectorProposalID string                    `json:"directorProposalId"`
+	ProjectID          string                    `json:"projectId"`
+	Prompt             string                    `json:"prompt"`
+	CanvasSnapshot     map[string]any            `json:"canvasSnapshot"`
+	References         []string                  `json:"references"`
+	Requirements       string                    `json:"requirements"`
+	CanvasAssets       []storyboardAsset         `json:"canvasAssets"`
+	ProjectStyle       storyboardProjectStyle    `json:"projectStyle"`
+	Characters         []storyboardCharacterCard `json:"characters"`
+	Config             providerConfig            `json:"config"`
+	LogicalModelID     string                    `json:"logicalModelId"`
 }
 
 type CreateTaskRequest struct {

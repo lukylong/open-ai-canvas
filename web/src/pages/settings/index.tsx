@@ -1,5 +1,5 @@
 import { App, Button, Form, Input, InputNumber, Select } from "antd";
-import { ArrowLeft, Boxes, Cloud, MessageSquareText, RadioTower, SlidersHorizontal, SquareTerminal } from "lucide-react";
+import { ArrowLeft, Boxes, Cloud, KeyRound, MessageSquareText, RadioTower, SlidersHorizontal, SquareTerminal } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -13,10 +13,12 @@ export { UserLocalChannelFields, UserLocalChannelSwitch, userLocalChannelChangeP
 import { ModelDefaultGrid } from "./model-default-grid";
 import { LocalCliSettings } from "./local-cli-settings";
 import { PromptPreferencesPane } from "./prompt-preferences-pane";
+import { changePassword } from "@/services/api/auth";
 
-type ConfigSectionKey = "local-cli" | "channels" | "models" | "preferences" | "prompts" | "storage";
+type ConfigSectionKey = "account" | "local-cli" | "channels" | "models" | "preferences" | "prompts" | "storage";
 
 const configSections: Array<{ key: ConfigSectionKey; label: string; description: string; icon: ReactNode }> = [
+    { key: "account", label: "账号安全", description: "修改密码并撤销旧会话", icon: <KeyRound className="size-4" /> },
     { key: "local-cli", label: "本机工具", description: "连接 Runtime 与官方 CLI", icon: <SquareTerminal className="size-4" /> },
     { key: "channels", label: "自定义渠道", description: "连接你自己的模型服务", icon: <RadioTower className="size-4" /> },
     { key: "models", label: "模型选择", description: "按领域选择默认模型", icon: <Boxes className="size-4" /> },
@@ -90,6 +92,7 @@ export default function SettingsPage() {
     };
 
     const panes: Record<ConfigSectionKey, ReactNode> = {
+        account: <SettingsPane><PasswordSettingsPane /></SettingsPane>,
         "local-cli": <SettingsPane><LocalCliSettings /></SettingsPane>,
         channels: <SettingsPane><ChannelSettingsPane onOpenModels={() => selectSection("models")} /></SettingsPane>,
         models: (
@@ -226,6 +229,53 @@ export default function SettingsPage() {
                 </section>
             </div>
         </main>
+    );
+}
+
+function PasswordSettingsPane() {
+    const { message } = App.useApp();
+    const navigate = useNavigate();
+    const clearSession = useUserStore((state) => state.clearSession);
+    const [submitting, setSubmitting] = useState(false);
+    const [form] = Form.useForm<{ currentPassword: string; newPassword: string; confirmPassword: string }>();
+    const submit = async (values: { currentPassword: string; newPassword: string; confirmPassword: string }) => {
+        if (values.newPassword !== values.confirmPassword) {
+            message.error("两次输入的新密码不一致");
+            return;
+        }
+        setSubmitting(true);
+        try {
+            await changePassword({ currentPassword: values.currentPassword, newPassword: values.newPassword });
+            clearSession();
+            message.success("密码已修改，所有旧会话已撤销，请重新登录");
+            navigate("/login", { replace: true });
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "密码修改失败");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+    return (
+        <div className="settings-section max-w-xl">
+            <div className="settings-pane-header">
+                <div>
+                    <h2>账号安全</h2>
+                    <p>迁移账号首次登录后可在这里更换密码；成功后当前设备和其他设备都需要重新登录。</p>
+                </div>
+            </div>
+            <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void submit(values)}>
+                <Form.Item name="currentPassword" label="当前密码" rules={[{ required: true, message: "请输入当前密码" }]}>
+                    <Input.Password autoComplete="current-password" />
+                </Form.Item>
+                <Form.Item name="newPassword" label="新密码" rules={[{ required: true, min: 8, message: "新密码至少 8 位" }]}>
+                    <Input.Password autoComplete="new-password" />
+                </Form.Item>
+                <Form.Item name="confirmPassword" label="确认新密码" dependencies={["newPassword"]} rules={[{ required: true, message: "请再次输入新密码" }]}>
+                    <Input.Password autoComplete="new-password" />
+                </Form.Item>
+                <Button type="primary" htmlType="submit" loading={submitting}>修改密码并重新登录</Button>
+            </Form>
+        </div>
     );
 }
 

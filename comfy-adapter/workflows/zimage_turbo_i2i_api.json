@@ -1,0 +1,168 @@
+{
+  "5": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "reference.png"
+    },
+    "_meta": {
+      "title": "Reference Image"
+    }
+  },
+  "9": {
+    "class_type": "ImageScaleToMaxDimension",
+    "inputs": {
+      "image": [
+        "5",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "largest_size": 1024
+    },
+    "_meta": {
+      "title": "Scale Reference"
+    }
+  },
+  "10": {
+    "class_type": "UNETLoaderMultiGPU",
+    "inputs": {
+      "unet_name": "z_image_turbo_bf16.safetensors",
+      "weight_dtype": "default",
+      "device": "cuda:0"
+    },
+    "_meta": {
+      "title": "UNet cuda:0"
+    }
+  },
+  "11": {
+    "class_type": "CLIPLoaderMultiGPU",
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "lumina2",
+      "device": "cuda:0"
+    },
+    "_meta": {
+      "title": "CLIP cuda:0"
+    }
+  },
+  "12": {
+    "class_type": "VAELoaderMultiGPU",
+    "inputs": {
+      "vae_name": "ae.safetensors",
+      "device": "cuda:0"
+    },
+    "_meta": {
+      "title": "VAE cuda:0"
+    }
+  },
+  "14": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "10",
+        0
+      ],
+      "shift": 3.0
+    }
+  },
+  "19": {
+    "class_type": "PrimitiveStringMultiline",
+    "inputs": {
+      "value": ""
+    },
+    "_meta": {
+      "title": "Edit Prompt"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "11",
+        0
+      ],
+      "text": [
+        "19",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "11",
+        0
+      ],
+      "text": "low quality, blurry, out of focus, deformed, bad anatomy, bad hands, extra fingers, extra limbs, malformed face, text, watermark, logo, compression artifacts, oversharpened, overexposed"
+    },
+    "_meta": {
+      "title": "Negative Prompt"
+    }
+  },
+  "80": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "9",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "14",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "13",
+        0
+      ],
+      "latent_image": [
+        "80",
+        0
+      ],
+      "seed": 42,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "denoise": 0.4
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ]
+    }
+  },
+  "29": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ],
+      "filename_prefix": "ZImage_I2I"
+    },
+    "_meta": {
+      "title": "Save Image"
+    }
+  }
+}

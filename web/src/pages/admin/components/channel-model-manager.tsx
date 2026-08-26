@@ -220,7 +220,8 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
         }
         if (!changed.capability) return;
         const current = form.getFieldValue("protocol") as ModelProtocol | undefined;
-        if (modelProtocolCapability(current) !== changed.capability) {
+        const currentSupportsCapability = MODEL_PROTOCOLS.some((item) => item.value === current && item.capability === changed.capability);
+        if (!currentSupportsCapability) {
             const nextProtocol = MODEL_PROTOCOLS.find((item) => item.capability === changed.capability)?.value;
             form.setFieldValue("protocol", nextProtocol);
             form.setFieldValue("capabilityConfig", changed.capability === "text" || changed.capability === "image" || changed.capability === "video" ? defaultModelCapabilityConfig(nextProtocol, form.getFieldValue("modelKey")) : undefined);

@@ -308,6 +308,11 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 			return nil, err
 		}
 	}
+	if input.Mode == "audio" {
+		if err := s.prepareAudioVoiceReference(userID, &input); err != nil {
+			return nil, err
+		}
+	}
 	if resumedProviderRequestID(ctx) == "" {
 		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo)
 		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL); err != nil {
@@ -338,6 +343,32 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	default:
 		return nil, fmt.Errorf("不支持的生成模式：%s", input.Mode)
 	}
+}
+
+func (s *Service) prepareAudioVoiceReference(userID string, input *canvasGenerationInput) error {
+	if input.Metadata == nil {
+		return nil
+	}
+	voice, ok := input.Metadata["resolvedCharacterVoice"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	resourceID := metadataString(voice, "sampleResourceId")
+	if resourceID == "" {
+		return nil
+	}
+	resource, err := s.repo.ResourceForUser(userID, resourceID)
+	if err != nil {
+		return fmt.Errorf("读取声音样本失败：%w", err)
+	}
+	if resource.Status != model.ResourceStatusReady {
+		return errors.New("声音样本尚未准备完成")
+	}
+	input.ReferenceAudios = append(input.ReferenceAudios, providerMedia{
+		ID: resource.ID, Name: defaultString(resource.ObjectKey, "voice-reference"), Type: resource.MimeType,
+		StorageKey: "resource:" + resource.ID, MimeType: resource.MimeType, DurationMs: resource.DurationMs,
+	})
+	return nil
 }
 
 func runAgentToolTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
@@ -911,6 +942,9 @@ func systemChannelIDFromBaseURL(baseURL string) string {
 }
 
 func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if input.Config.InterfaceType == string(model.ChannelInterfaceComfyUIWorkflow) {
+		return runComfyUIWorkflowTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceGrokImage) {
 		return runGrokImageTask(ctx, input)
 	}
@@ -1590,6 +1624,7 @@ func runAudioTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		body["instructions"] = input.Config.AudioInstructions
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceAsyncAudio) {
+		appendResolvedVoiceRequest(body, input)
 		return runAsyncAudioTask(ctx, input, body, format)
 	}
 	data, mimeType, err := postBinary(ctx, input.Config, "/audio/speech", body)
@@ -1601,6 +1636,25 @@ func runAudioTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		return nil, err
 	}
 	return map[string]interface{}{"mode": "audio", "audio": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType, "format": format}}, nil
+}
+
+func appendResolvedVoiceRequest(body map[string]interface{}, input canvasGenerationInput) {
+	if len(input.ReferenceAudios) > 0 {
+		reference := input.ReferenceAudios[len(input.ReferenceAudios)-1]
+		body["reference_audio"] = firstNonEmpty(reference.URL, reference.DataURL)
+	}
+	if voice, ok := input.Metadata["resolvedCharacterVoice"].(map[string]interface{}); ok {
+		if value := metadataString(voice, "referenceText"); value != "" {
+			body["reference_text"] = value
+		}
+		body["voice_profile"] = map[string]interface{}{
+			"voice_key": metadataString(voice, "voiceKey"),
+			"provider":  metadataString(voice, "provider"),
+			"language":  metadataString(voice, "language"),
+			"timbre":    metadataString(voice, "timbre"),
+			"source_id": metadataString(voice, "profileId"),
+		}
+	}
 }
 
 func runAsyncAudioTask(ctx context.Context, input canvasGenerationInput, body map[string]interface{}, format string) (map[string]interface{}, error) {
@@ -1804,6 +1858,9 @@ func audioFormatMimeType(format string) string {
 }
 
 func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if input.Config.InterfaceType == string(model.ChannelInterfaceComfyUIWorkflow) {
+		return runComfyUIWorkflowTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo) {
 		return runMiniMaxVideoTask(ctx, input)
 	}
@@ -2800,8 +2857,8 @@ func validateGenerationInterface(mode string, interfaceType string) error {
 	}
 	allowed := map[string]map[string]bool{
 		"text":  {"chat-completion": true, "openai-response": true},
-		"image": {"openai-image": true, "grok-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
-		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true, "minimax-video": true},
+		"image": {"openai-image": true, "grok-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true, "comfyui-workflow": true},
+		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true, "minimax-video": true, "comfyui-workflow": true},
 		"audio": {"openai-audio": true, "async-audio": true},
 	}
 	if allowed[mode] != nil && !allowed[mode][interfaceType] {

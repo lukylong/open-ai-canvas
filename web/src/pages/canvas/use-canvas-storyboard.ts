@@ -24,6 +24,7 @@ import { generationErrorMessage } from "@/lib/generation-error";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import { createGenerationTask, waitForGenerationTask } from "@/services/api/task-center";
 import { modelDisplayName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { useUserStore } from "@/stores/use-user-store";
 import {
     CanvasNodeType,
     type CanvasConnection,
@@ -59,9 +60,14 @@ export function useCanvasStoryboard({
     const { message, modal } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
+    const batchMaxCount = useUserStore((state) => state.runtimeLimits.batchMaxCount);
 
     const confirmGenerationSubmission = useCallback((count: number, model: string, taskLabel: string) => new Promise<boolean>((resolve) => {
         if (!count) return resolve(false);
+        if (count > batchMaxCount) {
+            message.error(`单次批量生成最多支持 ${batchMaxCount} 个任务，请拆分后提交`);
+            return resolve(false);
+        }
         modal.confirm({
             title: `确认提交 ${count} 个${taskLabel}任务`,
             content: `任务数：${count}；模型：${modelDisplayName(effectiveConfig, model)}。当前没有可用价格数据，将提交 ${count} 个外部模型任务。`,
@@ -71,7 +77,7 @@ export function useCanvasStoryboard({
             onOk: () => resolve(true),
             onCancel: () => resolve(false),
         });
-    }), [effectiveConfig, modal]);
+    }), [batchMaxCount, effectiveConfig, message, modal]);
 
     const updateScriptRows = useCallback((nodeId: string, updater: (rows: StoryboardRow[]) => StoryboardRow[]) => {
         setNodes((current) => current.map((node) => node.id === nodeId ? {

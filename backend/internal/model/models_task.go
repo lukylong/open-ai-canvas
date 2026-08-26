@@ -7,6 +7,9 @@ type Task struct {
 	UserID                 string     `json:"userId" gorm:"index;size:36;index:idx_tasks_user_created,priority:1"`
 	SessionID              string     `json:"sessionId" gorm:"index;size:36"`
 	ProjectID              string     `json:"projectId" gorm:"index;size:80"`
+	BatchID                string     `json:"batchId,omitempty" gorm:"index;size:36"`
+	BatchItemID            *string    `json:"batchItemId,omitempty" gorm:"uniqueIndex;size:36"`
+	BatchIndex             int        `json:"batchIndex,omitempty"`
 	Type                   string     `json:"type" gorm:"index;size:64"`
 	Status                 TaskStatus `json:"status" gorm:"index;size:24;index:idx_tasks_status_created,priority:1;index:idx_tasks_claim,priority:1;index:idx_tasks_provider_cancel,priority:1"`
 	Stage                  string     `json:"stage" gorm:"size:80"`

@@ -62,6 +62,7 @@ func main() {
 		log.Printf("storage migration completed: tasks=%d assets=%d projects=%d backup=%s", summary.Tasks, summary.Assets, summary.Projects, summary.Backup)
 	}
 	svc.StartWorker()
+	svc.StartDistributionWorker()
 
 	r := gin.New()
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
@@ -96,6 +97,7 @@ func main() {
 	handler.RegisterSessionRoutes(api, svc)
 	handler.RegisterSkillRoutes(api, svc)
 	handler.RegisterUserDataRoutes(api, svc)
+	handler.RegisterDistributionRoutes(api, svc)
 	handler.RegisterPluginRoutes(api, svc)
 	projectAPI := api.Group("")
 	projectAPI.Use(handler.RequireFeature(svc, service.FeatureShortDrama))

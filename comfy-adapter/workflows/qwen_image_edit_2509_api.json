@@ -1,0 +1,154 @@
+{
+  "41": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "reference.png"
+    },
+    "_meta": {
+      "title": "Reference Image"
+    }
+  },
+  "73": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "Qwen Image Edit UNET"
+    }
+  },
+  "72": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "Qwen 2.5 VL CLIP"
+    }
+  },
+  "71": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "_meta": {
+      "title": "Qwen Image VAE"
+    }
+  },
+  "67": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "73",
+        0
+      ],
+      "shift": 3.1
+    }
+  },
+  "68": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": [
+        "72",
+        0
+      ],
+      "prompt": "",
+      "vae": [
+        "71",
+        0
+      ],
+      "image1": [
+        "41",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Edit Instruction"
+    }
+  },
+  "69": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": [
+        "72",
+        0
+      ],
+      "prompt": "",
+      "vae": [
+        "71",
+        0
+      ],
+      "image1": [
+        "41",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Negative Edit Instruction"
+    }
+  },
+  "66": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "65": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "67",
+        0
+      ],
+      "positive": [
+        "68",
+        0
+      ],
+      "negative": [
+        "69",
+        0
+      ],
+      "latent_image": [
+        "66",
+        0
+      ],
+      "seed": 42,
+      "steps": 20,
+      "cfg": 4.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "65",
+        0
+      ],
+      "vae": [
+        "71",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ],
+      "filename_prefix": "QwenImageEdit"
+    },
+    "_meta": {
+      "title": "Save Edited Image"
+    }
+  }
+}

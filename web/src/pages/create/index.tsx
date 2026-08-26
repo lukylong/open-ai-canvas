@@ -25,6 +25,7 @@ import { isGenerationTaskCancelled, logicalModelIDForConfig, runBackendGeneratio
 import { requestImageQuestion, type AiTextContentPart } from "@/services/api/image";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
 import { subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
+import { cancelWaitingTaskBatchItems, getTaskBatch, isTaskBatchDetailTerminal, pauseTaskBatch, resumeTaskBatch, retryFailedTaskBatchItems, type TaskBatchDetail, type TaskBatchStatus } from "@/services/api/task-batches";
 import { createTextReplayPublisher } from "@/lib/creation-text-replay";
 import { isLocalDreaminaWaitStopped, localDreaminaCancellationMessage } from "@/services/local-dreamina-task-projection";
 import { getMediaBlob, uploadMediaFile } from "@/services/file-storage";
@@ -62,6 +63,8 @@ type CreationMessage = {
     references?: CreationReference[];
     settings?: CreationSettings;
     taskIds?: string[];
+	taskBatchId?: string;
+	taskBatchStatus?: TaskBatchStatus;
     clientOperationId?: string;
     retryOf?: string;
     attemptGroupId?: string;
@@ -128,6 +131,8 @@ function completedCreationGenerationTask(input: { taskId: string; task?: Generat
 export default function CreatePage() {
     const { message: toast, modal } = App.useApp();
     const config = useEffectiveConfig();
+	const batchMaxCount = useUserStore((state) => state.runtimeLimits.batchMaxCount);
+	const activeTaskLimit = useUserStore((state) => state.runtimeLimits.activeTaskLimit);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const assets = useAssetStore((state) => state.assets);
     const addAsset = useAssetStore((state) => state.addAsset);
@@ -145,7 +150,7 @@ export default function CreatePage() {
     const [seconds, setSeconds] = useState("6");
     const [quality, setQuality] = useState("auto");
     const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
-    const [count, setCount] = useState(String(Math.max(1, Math.min(4, Number(config.count) || 1))));
+	const [count, setCount] = useState(String(Math.max(1, Math.min(batchMaxCount, Number(config.count) || 1))));
     const [busy, setBusy] = useState(false);
     const [viewMode, setViewMode] = useState<CreationViewMode>("chat");
     const [selectedShotIndex, setSelectedShotIndex] = useState(-1);
@@ -181,8 +186,8 @@ export default function CreatePage() {
         },
         videoSeconds: mode === "video" ? seconds : undefined,
         imageSize: mode === "image" ? ratio : undefined,
-		options: mode === "image"
-			? { size: ratio, quality, count: Number(count), transparentBackground: config.transparentBackground === "true" }
+			options: mode === "image"
+				? { size: ratio, quality, count: 1, transparentBackground: config.transparentBackground === "true" }
 			: mode === "video"
 				? { size: ratio, videoSeconds: Number(seconds), vquality: videoQuality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
 				: {},
@@ -200,23 +205,28 @@ export default function CreatePage() {
     }, [attachments]);
     const mentionReferences = useMemo(() => buildCreationMentionReferences(addedSkills, attachments, draftReferences), [addedSkills, attachments, draftReferences]);
     const isEmpty = !activeConversation?.messages.length;
-    const pendingTaskKey = useMemo(() => pendingCreationTaskKey(conversations), [conversations]);
-    const pendingTaskIds = useMemo(() => pendingCreationTaskIds(conversations), [conversations]);
+	const pendingTaskKey = useMemo(() => pendingCreationTaskKey(conversations), [conversations]);
+	const pendingTaskIds = useMemo(() => pendingCreationTaskIds(conversations), [conversations]);
+	const pendingTaskBatchIds = useMemo(() => Array.from(new Set(conversations.flatMap((conversation) => conversation.messages.filter((item) => item.role === "assistant" && item.status === "pending" && item.taskBatchId).map((item) => item.taskBatchId!)))), [conversations]);
+	const pendingTaskBatchKey = pendingTaskBatchIds.join(":");
     const shots = useMemo(() => shotsFromMessages(activeConversation?.messages || []), [activeConversation]);
     const visibleShotIndex = shots.length ? selectedShotIndex >= 0 && selectedShotIndex < shots.length ? selectedShotIndex : shots.length - 1 : -1;
 
     useEffect(() => {
         if (mode !== "image") return;
         // 前台逻辑模型的默认参数优先于旧的全局创作参数；否则旧的合法值会一直覆盖后台刚配置的默认值。
-        const normalized = normalizeImageValue(imageProfile, {
-            size: imageProfile.size.default,
-            quality: imageProfile.quality.default,
-            count,
-        });
-        setRatio(normalized.size);
-        setQuality(normalized.quality);
-        setCount(normalized.count);
-    }, [mode, selectedModel, imageProfile]);
+		const normalized = normalizeImageValue(imageProfile, {
+			size: imageProfile.size.default,
+			quality: imageProfile.quality.default,
+			count: "1",
+		});
+		setRatio(normalized.size);
+		setQuality(normalized.quality);
+	}, [mode, selectedModel, imageProfile]);
+
+	useEffect(() => {
+		setCount((current) => String(Math.max(1, Math.min(batchMaxCount, Math.floor(Number(current)) || 1))));
+	}, [batchMaxCount]);
 
     useEffect(() => {
         if (mode !== "video") return;
@@ -267,8 +277,8 @@ export default function CreatePage() {
         if (hydrated) void saveCreationConversations(conversations);
     }, [conversations, hydrated]);
 
-    useEffect(() => {
-        if (!hydrated || !pendingTaskKey || !pendingTaskIds.length) return;
+	useEffect(() => {
+		if (!hydrated || !pendingTaskKey || !pendingTaskIds.length) return;
         let cancelled = false;
         const observationController = new AbortController();
         const applyTasks = async (tasks: GenerationTask[]) => {
@@ -304,7 +314,79 @@ export default function CreatePage() {
             observationController.abort();
             unsubscribe();
         };
-    }, [hydrated, pendingTaskKey, toast]);
+	}, [hydrated, pendingTaskKey, toast]);
+
+	useEffect(() => {
+		if (!hydrated || !pendingTaskBatchIds.length) return;
+		let cancelled = false;
+		let polling = false;
+		const controller = new AbortController();
+		const poll = async () => {
+			if (cancelled || polling) return;
+			polling = true;
+			try {
+				const details = await Promise.all(pendingTaskBatchIds.map((id) => getTaskBatch(id, controller.signal)));
+				if (cancelled) return;
+				const detailByID = new Map(details.map((detail) => [detail.batch.id, detail]));
+				const next = conversationsRef.current.map((conversation) => ({
+					...conversation,
+					messages: conversation.messages.map((item) => {
+						const detail = item.taskBatchId ? detailByID.get(item.taskBatchId) : undefined;
+						if (!detail || item.status !== "pending") return item;
+						const batch = detail.batch;
+						const taskIds = detail.items.flatMap((batchItem) => batchItem.taskId ? [batchItem.taskId] : []);
+						return {
+							...item,
+							taskBatchStatus: batch.status,
+							taskIds: Array.from(new Set([...(item.taskIds || []), ...taskIds])),
+							generationStage: `批次 ${batch.succeededCount + batch.failedCount + batch.cancelledCount}/${batch.requestedCount} · 运行 ${batch.runningCount} · 等待 ${batch.waitingCount + batch.queuedCount}`,
+						};
+					}),
+				}));
+				conversationsRef.current = next;
+				setConversations(next);
+				for (const detail of details) {
+					if (!isTaskBatchDetailTerminal(detail)) continue;
+					const tasks = detail.items.flatMap((item) => item.task ? [item.task] : []);
+					const contextual = attachCreationTaskContexts(tasks, conversationsRef.current);
+					const persistedTasks = await materializeCreationTaskResults(contextual, controller.signal);
+					if (cancelled) return;
+					const reconciled = reconcileCreationTaskMessages(conversationsRef.current, persistedTasks);
+					const resultUrls = Array.from(new Set(persistedTasks.flatMap(creationTaskResultUrls)));
+					const taskIds = persistedTasks.map((task) => task.id);
+					const finalized = reconciled.map((conversation) => ({
+						...conversation,
+						messages: conversation.messages.map((message) => {
+							if (message.taskBatchId !== detail.batch.id || message.status !== "pending") return message;
+							if (resultUrls.length) return {
+								...message,
+								status: "done" as const,
+								content: detail.batch.failedCount || detail.batch.cancelledCount ? `${resultUrls.length} 张图片已生成，${detail.batch.failedCount + detail.batch.cancelledCount} 张失败或取消` : "图片已生成",
+								resultUrls,
+								taskIds: Array.from(new Set([...(message.taskIds || []), ...taskIds])),
+								error: undefined,
+							};
+							if (detail.batch.status === "cancelled") return { ...message, status: "cancelled" as const, content: "等待任务已取消", error: undefined };
+							return { ...message, status: "error" as const, content: "生成失败", error: detail.batch.lastError || "批次没有生成可用图片" };
+						}),
+					}));
+					conversationsRef.current = finalized;
+					setConversations(finalized);
+				}
+			} catch (error) {
+				if (!cancelled && !controller.signal.aborted) console.warn("持久化批次状态同步失败", error);
+			} finally {
+				polling = false;
+			}
+		};
+		void poll();
+		const timer = window.setInterval(() => void poll(), 2_000);
+		return () => {
+			cancelled = true;
+			controller.abort();
+			window.clearInterval(timer);
+		};
+	}, [hydrated, pendingTaskBatchKey]);
 
     useEffect(() => {
         let cancelled = false;
@@ -491,13 +573,14 @@ export default function CreatePage() {
         const referenceMetadata = creationReferenceMetadata(references);
         followLatestMessageRef.current = true;
         const userMessage = newMessage("user", text, { mode, model: selectedModel, attachments, references, settings });
-        const assistantMessage = newMessage("assistant", "", { mode, model: selectedModel, status: mode === "text" ? "streaming" : "pending", settings, ...retryContext });
+		const operationId = retryContext?.clientOperationId || createClientId();
+		const assistantMessage = newMessage("assistant", "", { mode, model: selectedModel, status: mode === "text" ? "streaming" : "pending", settings, clientOperationId: operationId, ...retryContext });
         const originConversationId = activeConversation.id;
         const updateOriginAssistant = (updater: (item: CreationMessage) => CreationMessage) => updateConversationMessage(originConversationId, assistantMessage.id, updater);
         const boundTaskIds = new Set<string>();
         const boundTaskIdsByBatchIndex = new Map<number, string>();
         const boundTasks = new Map<string, GenerationTask>();
-        const bindTask = (task: GenerationTask) => {
+		const bindTask = (task: GenerationTask) => {
             if (typeof task.clientContext?.batchIndex === "number") boundTaskIdsByBatchIndex.set(task.clientContext.batchIndex, task.id);
             boundTaskIds.add(task.id);
             boundTasks.set(task.id, task);
@@ -506,7 +589,17 @@ export default function CreatePage() {
                 abortRef.current = null;
                 setBusy(false);
             }
-        };
+		};
+		const bindBatch = (detail: TaskBatchDetail) => {
+			const batch = detail.batch;
+			updateOriginAssistant((item) => ({
+				...item,
+				taskBatchId: batch.id,
+				taskBatchStatus: batch.status,
+				generationStage: `批次 ${batch.succeededCount + batch.failedCount + batch.cancelledCount}/${batch.requestedCount} · 运行 ${batch.runningCount} · 等待 ${batch.waitingCount + batch.queuedCount}`,
+				clientOperationId: operationId,
+			}));
+		};
         updateActive((conversation) => ({
             ...conversation,
             title: conversation.messages.length ? conversation.title : text.slice(0, 24),
@@ -575,7 +668,7 @@ export default function CreatePage() {
 					replayPublisher.finish(finalText);
 				}
             } else if (mode === "image") {
-                const taskCount = Math.max(1, Math.min(imageProfile.maxOutputs, Math.floor(Number(count) || 1)));
+				const taskCount = Math.max(1, Math.min(batchMaxCount, Math.floor(Number(count) || 1)));
                 const settled = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTaskBatch({
                     mode: "image",
                     prompt: expandedPrompt,
@@ -583,9 +676,11 @@ export default function CreatePage() {
                     referenceImages,
                     signal: requestLifecycle.signal,
                     metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
-                    onTaskUpdate: bindTask,
-                    count: taskCount,
-                    ...retryContext,
+					onTaskUpdate: bindTask,
+					onBatchUpdate: bindBatch,
+					count: taskCount,
+					clientOperationId: operationId,
+					...retryContext,
                 }));
                 if (requestLifecycle.signal.aborted) throw new DOMException("Aborted", "AbortError");
                 const boundTaskIdList = Array.from(boundTaskIds);
@@ -744,9 +839,24 @@ export default function CreatePage() {
         setCount(nextSettings.count);
     };
 
-    const retryFailedMessage = async (item: CreationMessage, index: number) => {
-        const previous = item.role === "assistant" ? activeConversation?.messages[index - 1] : item;
-        if (!previous?.content || busy) return;
+	const retryFailedMessage = async (item: CreationMessage, index: number) => {
+		const previous = item.role === "assistant" ? activeConversation?.messages[index - 1] : item;
+		if (!previous?.content || busy) return;
+		if (item.taskBatchId) {
+			try {
+				const detail = await retryFailedTaskBatchItems(item.taskBatchId);
+				await updateConversationMessage(activeConversation.id, item.id, (current) => ({
+					...current,
+					status: "pending",
+					error: undefined,
+					generationStage: `失败项已重新排队 · 等待 ${detail.batch.waitingCount}`,
+				}));
+				toast.success("失败项已重新加入后台批次");
+			} catch (error) {
+				toast.error(generationErrorMessage(error));
+			}
+			return;
+		}
         const retryOf = item.taskIds?.[0];
         const restoreForRetry = () => {
             followLatestMessageRef.current = true;
@@ -830,8 +940,10 @@ export default function CreatePage() {
         setQuality,
         videoQuality,
         setVideoQuality,
-        count,
-        setCount,
+		count,
+		setCount,
+		batchMaxCount,
+		activeTaskLimit,
         composerFocusRef,
         placeholderOverride: viewMode === "storyboard" && composingNextShot ? `SC.${String(nextShotNumber).padStart(2, "0")} · 写下这一镜的镜头、画面或故事` : undefined,
         onSubmit: () => void submit(),
@@ -986,7 +1098,7 @@ function CreationMessageView({ item, modelName, onRetryFailure, onCreateVariant 
     if (item.role === "user") return <CreationUserMessage item={item} />;
     const mode = item.mode || "text";
     const stateLabel = item.status === "pending" ? "生成中" : item.status === "cancelled" ? "已停止" : item.status === "error" ? "生成失败" : "";
-    const heading = <><span className="creation-message-mark"><Sparkles /></span><strong>{mode === "image" ? "图像生成" : mode === "video" ? "视频生成" : "影策 AI"}</strong>{mode !== "text" ? <span className="creation-message-progress-copy">{item.status === "pending" ? `影策正在生成${mode === "video" ? "视频" : "图像"}……` : item.status === "done" ? `你的${mode === "video" ? "视频" : "图像"}已创建` : null}</span> : null}{modelName ? <span className="creation-message-model">{modelName}</span> : null}{item.createdAt ? <time dateTime={item.createdAt}>{formatMessageTime(item.createdAt)}</time> : null}{stateLabel ? <span className={`creation-message-state is-${item.status}`}>{stateLabel}</span> : null}</>;
+	const heading = <><span className="creation-message-mark"><Sparkles /></span><strong>{mode === "image" ? "图像生成" : mode === "video" ? "视频生成" : "影策 AI"}</strong>{mode !== "text" ? <span className="creation-message-progress-copy">{item.status === "pending" ? item.generationStage || `影策正在生成${mode === "video" ? "视频" : "图像"}……` : item.status === "done" ? `你的${mode === "video" ? "视频" : "图像"}已创建` : null}</span> : null}{modelName ? <span className="creation-message-model">{modelName}</span> : null}{item.createdAt ? <time dateTime={item.createdAt}>{formatMessageTime(item.createdAt)}</time> : null}{stateLabel ? <span className={`creation-message-state is-${item.status}`}>{stateLabel}</span> : null}</>;
     const toolStatus: GenerationToolStatus = item.status === "pending" ? "running" : item.status === "error" ? "error" : item.status === "cancelled" ? "cancelled" : "completed";
     return <article className={`creation-assistant-message is-${mode}`}>
         {mode === "text" ? <><div className="creation-message-heading">{heading}</div>{item.reasoning ? <MessageReasoning reasoning={item.reasoning} isStreaming={item.status === "streaming"} /> : null}<div className="creation-message-content">{item.content ? <AIMessageMarkdown isStreaming={item.status === "streaming"}>{item.content}</AIMessageMarkdown> : <span>正在生成…</span>}</div></> : <GenerationToolCard status={toolStatus} isBulk={(item.resultUrls?.length || Number(item.settings?.count) || 1) > 1} heading={heading}><MediaResult item={item} onRetryFailure={onRetryFailure} onCreateVariant={onCreateVariant} /></GenerationToolCard>}
@@ -1016,23 +1128,41 @@ function CreationUserMessage({ item }: { item: CreationMessage }) {
 function MediaResult({ item, onRetryFailure, onCreateVariant }: { item: CreationMessage; onRetryFailure: () => void; onCreateVariant: () => void }) {
     const [previewUrl, setPreviewUrl] = useState("");
     const [previewType, setPreviewType] = useState<"image" | "video">("image");
-    const assets = useAssetStore((state) => state.assets);
-    const resultUrls = item.resultUrls || [];
+	const assets = useAssetStore((state) => state.assets);
+	const resultUrls = item.resultUrls || [];
+	const visibleResultUrls = resultUrls.slice(0, 100);
     const resultAssetIds = resultUrls.length ? creationResultAssetIds(assets, { messageId: item.id, taskIds: item.taskIds || [], resultUrls }) : [];
     const canvasPath = creationCanvasHandoffPath(resultAssetIds) || "/canvas";
-    if (item.status === "pending") return <CreationMediaPending mode={item.mode || "image"} ratio={item.settings?.ratio} />;
+	if (item.status === "pending") return <CreationMediaPending mode={item.mode || "image"} ratio={item.settings?.ratio} taskBatchId={item.taskBatchId} taskBatchStatus={item.taskBatchStatus} />;
     if ((item.status === "error" || item.status === "cancelled") && !resultUrls.length) return <div className="creation-media-error"><span>{item.status === "cancelled" ? item.content || "已停止" : generationErrorMessage(item.error || "生成失败")}</span><button type="button" onClick={onRetryFailure}><RefreshCw />重新生成</button></div>;
     if (!resultUrls.length) return <div className="creation-media-empty">没有返回可预览结果 <button type="button" onClick={onRetryFailure}>重试</button></div>;
     const isVideo = item.mode === "video";
     return <div className="creation-media-result">
-        {isVideo ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewUrl(resultUrls[0]); }} aria-label="预览生成视频"><video muted preload="metadata" src={resultUrls[0]} /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewUrl(url); }} aria-label="预览生成图片"><img src={url} alt="生成结果" /><span><Maximize2 /></span></button>)}</div>}
-        <div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+		{isVideo ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewUrl(resultUrls[0]); }} aria-label="预览生成视频"><video muted preload="metadata" src={resultUrls[0]} /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{visibleResultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewUrl(url); }} aria-label="预览生成图片"><img src={url} alt="生成结果" loading="lazy" /><span><Maximize2 /></span></button>)}</div>}
+		{resultUrls.length > visibleResultUrls.length ? <p className="text-xs text-foreground/55">当前对话预览前 {visibleResultUrls.length} 张，全部 {resultUrls.length} 张已进入素材库。</p> : null}
+		<div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{visibleResultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{visibleResultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
         <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </div>;
 }
 
-function CreationMediaPending({ mode, ratio }: { mode: CreationMode; ratio?: string }) {
-    return <div className={`creation-media-pending is-${mode}`} style={{ aspectRatio: creationMediaAspectRatio(ratio, mode) }} aria-live="polite"><span className="creation-media-pending-icon"><Sparkles /></span><span className="sr-only">影策正在生成{mode === "video" ? "视频" : "图像"}</span></div>;
+function CreationMediaPending({ mode, ratio, taskBatchId, taskBatchStatus }: { mode: CreationMode; ratio?: string; taskBatchId?: string; taskBatchStatus?: TaskBatchStatus }) {
+	const { message } = App.useApp();
+	const [updating, setUpdating] = useState(false);
+	const runAction = async (action: "pause" | "resume" | "cancel") => {
+		if (!taskBatchId || updating) return;
+		setUpdating(true);
+		try {
+			if (action === "pause") await pauseTaskBatch(taskBatchId);
+			else if (action === "resume") await resumeTaskBatch(taskBatchId);
+			else await cancelWaitingTaskBatchItems(taskBatchId);
+			message.success(action === "pause" ? "批次已暂停，运行中的任务会继续完成" : action === "resume" ? "批次已恢复" : "等待中的任务已取消");
+		} catch (error) {
+			message.error(generationErrorMessage(error));
+		} finally {
+			setUpdating(false);
+		}
+	};
+	return <div><div className={`creation-media-pending is-${mode}`} style={{ aspectRatio: creationMediaAspectRatio(ratio, mode) }} aria-live="polite"><span className="creation-media-pending-icon"><Sparkles /></span><span className="sr-only">影策正在生成{mode === "video" ? "视频" : "图像"}</span></div>{taskBatchId ? <div className="creation-media-actions"><span>{taskBatchStatus === "paused" ? "批次已暂停" : "后台批次执行中"}</span>{taskBatchStatus === "paused" ? <button type="button" disabled={updating} onClick={() => void runAction("resume")}>继续</button> : <button type="button" disabled={updating} onClick={() => void runAction("pause")}>暂停</button>}<button type="button" disabled={updating} onClick={() => void runAction("cancel")}>取消等待任务</button></div> : null}</div>;
 }
 
 function CreationMessageReferences({ references }: { references: CreationReference[] }) {
@@ -1096,8 +1226,10 @@ type ComposerProps = {
     setQuality: (value: string) => void;
     videoQuality: string;
     setVideoQuality: (value: string) => void;
-    count: string;
-    setCount: (value: string) => void;
+	count: string;
+	setCount: (value: string) => void;
+	batchMaxCount: number;
+	activeTaskLimit: number;
     composerFocusRef: RefObject<HTMLTextAreaElement | null>;
     placeholderOverride?: string;
     onSubmit: () => void;
@@ -1129,7 +1261,7 @@ function CreationComposer(props: ComposerProps) {
     const referencesSupported = props.mode === "image" ? imageReferencesSupported : props.mode !== "video" || props.videoProfile.operations.includes("image_to_video");
     const [primaryAttachment, ...secondaryAttachments] = props.attachments;
     const canAddMoreReferences = referencesSupported && props.attachments.length < props.maxReferences;
-    const imageSettingsSupported = props.imageProfile.size.parameter !== "none" || props.imageProfile.quality.supported || props.imageProfile.maxOutputs > 1;
+	const imageSettingsSupported = props.imageProfile.size.parameter !== "none" || props.imageProfile.quality.supported || props.batchMaxCount > 1;
     const previewAttachment = (type: "image" | "video", url: string) => {
         setPreviewType(type);
         setPreviewUrl(url);
@@ -1237,7 +1369,7 @@ function GenerationSettingsMenu(props: ComposerProps) {
     const imageSummary = [
         ...(mergedProfile.size.parameter !== "none" ? [referenceImageSizeSelected ? referenceImageSizeLabel : usesImageResolutionPicker ? formatImageResolutionSize(props.ratio, imageResolutionOptions) : props.ratio] : []),
         ...(props.imageProfile.quality.supported ? [qualityLabel] : []),
-        ...(props.imageProfile.maxOutputs > 1 ? [props.count] : []),
+		...(props.mode === "image" ? [props.count] : []),
     ].join(" · ");
     const summary = props.mode === "video" ? [props.ratio, ...(videoResolutionSupported ? [videoResolutionLabel(props.videoQuality)] : [])].join(" · ") : imageSummary;
     const panel = <div className="creation-parameter-menu">
@@ -1245,7 +1377,7 @@ function GenerationSettingsMenu(props: ComposerProps) {
         {props.mode === "video" ? (videoResolutionSupported ? <SettingSection title="清晰度" value={videoResolutionLabel(props.videoQuality)}><div className="creation-choice-grid is-resolution">{resolutions.map((option) => <button key={option.value} type="button" aria-pressed={option.value === props.videoQuality} className={option.value === props.videoQuality ? "is-selected" : ""} onClick={() => props.setVideoQuality(option.value)}>{option.label}</button>)}</div></SettingSection> : null) : <>
             {imageResolutionChoiceOptions.length ? <SettingSection title="分辨率" value={activeImageResolutionChoice === "auto" ? "自动" : activeImageResolutionChoice.toUpperCase()}><div className="creation-choice-grid is-resolution">{imageResolutionChoiceOptions.map((choice) => <button key={choice} type="button" aria-pressed={choice === activeImageResolutionChoice} className={choice === activeImageResolutionChoice ? "is-selected" : ""} onClick={() => selectImageResolution(choice)}>{choice === "auto" ? "自动" : choice.toUpperCase()}</button>)}</div></SettingSection> : null}
             {props.imageProfile.quality.supported ? <SettingSection title={activeQualityOptions.some((item) => item.value === "1k" || item.value === "2k") ? "分辨率" : "图片质量"} value={qualityLabel}><div className="creation-choice-grid is-quality">{activeQualityOptions.map((option) => <button key={option.value} type="button" aria-pressed={option.value === props.quality} className={option.value === props.quality ? "is-selected" : ""} onClick={() => props.setQuality(option.value)}><span>{option.label}</span><small>{option.description}</small></button>)}</div></SettingSection> : null}
-            {props.imageProfile.maxOutputs > 1 ? <SettingSection title="生成数量" value={`${props.count} 张`}><div className="creation-parameter-content"><div className="creation-choice-grid is-count">{countOptions.filter((option) => Number(option) <= props.imageProfile.maxOutputs).map((option) => <button key={option} type="button" aria-pressed={option === props.count} className={option === props.count ? "is-selected" : ""} onClick={() => props.setCount(option)}>{option}</button>)}</div><label className="creation-custom-value"><span>自定义</span><input inputMode="numeric" pattern="[0-9]*" value={props.count} onChange={(event) => props.setCount(String(Math.max(1, Math.min(props.imageProfile.maxOutputs, Number(event.target.value) || 1))))} aria-label={`生成数量，范围 1 到 ${props.imageProfile.maxOutputs}`} /><em>张</em></label></div></SettingSection> : null}
+			{props.mode === "image" ? <SettingSection title="批量生成数量" value={`${props.count} 张`}><div className="creation-parameter-content"><div className="creation-choice-grid is-count">{countOptions.filter((option) => Number(option) <= props.batchMaxCount).map((option) => <button key={option} type="button" aria-pressed={option === props.count} className={option === props.count ? "is-selected" : ""} onClick={() => props.setCount(option)}>{option}</button>)}</div><label className="creation-custom-value"><span>自定义</span><input inputMode="numeric" pattern="[0-9]*" value={props.count} onChange={(event) => props.setCount(String(Math.max(1, Math.min(props.batchMaxCount, Math.floor(Number(event.target.value)) || 1))))} aria-label={`批量生成数量，范围 1 到 ${props.batchMaxCount}`} /><em>张</em></label><p className="mt-2 text-xs text-foreground/55">最多创建 {props.batchMaxCount} 个持久任务，账号同时执行 {props.activeTaskLimit} 个；等待任务由后台自动续跑。</p></div></SettingSection> : null}
         </>}
     </div>;
     return <Popover open={open} onOpenChange={setOpen} trigger="click" placement="bottom" arrow={false} classNames={{ root: "creation-control-popover", container: "creation-control-popover-surface", content: "creation-control-popover-content" }} content={panel}>
@@ -1565,17 +1697,22 @@ function attachCreationTaskContexts(tasks: GenerationTask[], conversations: Crea
 }
 
 async function materializeCreationTaskResults(tasks: GenerationTask[], signal?: AbortSignal): Promise<PersistedCreationTask[]> {
-    return Promise.all(tasks.map(async (task): Promise<PersistedCreationTask> => {
-        // 文本正文保存在 resultJson，不进入媒体资源化链路。
-        if (task.status !== "succeeded" || !task.clientContext || task.type === "canvas_text") return task;
-        try {
-            const materialized = await runGenerationConsumer(signal, (managedSignal) => materializeGenerationTaskAssets(task, managedSignal));
-            const creationResultUrls = generationTaskMaterializedUrls(materialized);
-            return creationResultUrls.length ? { ...materialized, creationResultUrls } : materialized;
-        } catch (error) {
-            return { ...task, creationError: error instanceof Error ? error.message : "生成结果资源化失败" };
-        }
-    }));
+	const result: PersistedCreationTask[] = [];
+	for (let offset = 0; offset < tasks.length; offset += 20) {
+		const chunk = await Promise.all(tasks.slice(offset, offset + 20).map(async (task): Promise<PersistedCreationTask> => {
+			// 文本正文保存在 resultJson，不进入媒体资源化链路。批量结果分块处理，避免一次创建上千个媒体请求。
+			if (task.status !== "succeeded" || !task.clientContext || task.type === "canvas_text") return task;
+			try {
+				const materialized = await runGenerationConsumer(signal, (managedSignal) => materializeGenerationTaskAssets(task, managedSignal));
+				const creationResultUrls = generationTaskMaterializedUrls(materialized);
+				return creationResultUrls.length ? { ...materialized, creationResultUrls } : materialized;
+			} catch (error) {
+				return { ...task, creationError: error instanceof Error ? error.message : "生成结果资源化失败" };
+			}
+		}));
+		result.push(...chunk);
+	}
+	return result;
 }
 
 function reconcileCreationTaskMessages(conversations: CreationConversation[], tasks: PersistedCreationTask[]) {

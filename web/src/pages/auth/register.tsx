@@ -1,10 +1,10 @@
 import { type FormEvent, useEffect, useState, type ReactNode } from "react";
 import { App, Button, Divider, Input } from "antd";
-import { ArrowRight, Info, LockKeyhole, Mail, ShieldCheck, TriangleAlert, UserRound } from "lucide-react";
+import { ArrowRight, Info, KeyRound, LockKeyhole, Mail, TriangleAlert, UserRound } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { applyUserSession } from "@/lib/user-session";
-import { getAuthSession, getAuthSettings, linuxDOLoginURL, register, sendRegistrationEmailCode } from "@/services/api/auth";
+import { getAuthSession, getAuthSettings, linuxDOLoginURL, register } from "@/services/api/auth";
 import { LinuxDOIcon } from "./auth-scene";
 
 type AuthSettings = Awaited<ReturnType<typeof getAuthSettings>>;
@@ -16,13 +16,11 @@ export default function RegisterPage() {
     const [settings, setSettings] = useState<AuthSettings | null>(null);
     const [username, setUsername] = useState("");
     const [email, setEmail] = useState("");
-    const [emailCode, setEmailCode] = useState("");
+    const [invitationCode, setInvitationCode] = useState("");
     const [displayName, setDisplayName] = useState("");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
     const [submitting, setSubmitting] = useState(false);
-    const [sendingCode, setSendingCode] = useState(false);
-    const [countdown, setCountdown] = useState(0);
     const next = safeNext(params.get("next"));
 
     useEffect(() => {
@@ -30,29 +28,6 @@ export default function RegisterPage() {
         void getAuthSettings().then((value) => !cancelled && setSettings(value)).catch((error) => !cancelled && message.error(error instanceof Error ? error.message : "读取注册设置失败"));
         return () => { cancelled = true; };
     }, [message]);
-
-    useEffect(() => {
-        if (countdown <= 0) return;
-        const timer = window.setInterval(() => setCountdown((value) => Math.max(0, value - 1)), 1000);
-        return () => window.clearInterval(timer);
-    }, [countdown]);
-
-    const sendCode = async () => {
-        if (!email.trim()) {
-            message.warning("请先输入邮箱");
-            return;
-        }
-        setSendingCode(true);
-        try {
-            await sendRegistrationEmailCode(email.trim());
-            setCountdown(60);
-            message.success("验证码已发送，请检查邮箱");
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "发送验证码失败");
-        } finally {
-            setSendingCode(false);
-        }
-    };
 
     const submit = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -62,7 +37,7 @@ export default function RegisterPage() {
         }
         setSubmitting(true);
         try {
-            await register({ username, email, emailCode, displayName, password });
+            await register({ username, email, invitationCode, displayName, password });
             await applyUserSession(await getAuthSession());
             if (!settings?.firstUser) window.sessionStorage.setItem("infinite-canvas:model-setup-guide", "1");
             message.success(settings?.firstUser ? "管理员账号已创建" : "注册成功");
@@ -75,29 +50,24 @@ export default function RegisterPage() {
     };
 
     const registrationClosed = settings?.registrationEnabled === false;
-    const mailUnavailable = Boolean(settings && !settings.firstUser && settings.emailCodeRequired && !settings.emailEnabled);
-    const disabled = registrationClosed || mailUnavailable;
-    const requireCode = Boolean(settings && !settings.firstUser && settings.emailCodeRequired);
+    const disabled = registrationClosed;
+    const requireInvitation = Boolean(settings && !settings.firstUser && settings.invitationCodeRequired);
 
     return (
         <form onSubmit={submit} className="space-y-4">
-            {settings?.firstUser ? <Notice icon={<Info className="size-3.5" />} tone="blue">首个账号自动成为管理员，邮箱验证码暂不要求。</Notice> : null}
+            {settings?.firstUser ? <Notice icon={<Info className="size-3.5" />} tone="blue">首个账号自动成为管理员，无需邀请码。</Notice> : null}
             {registrationClosed ? <Notice icon={<TriangleAlert className="size-3.5" />} tone="amber">当前已关闭普通注册，请联系管理员创建账号。</Notice> : null}
-            {mailUnavailable ? <Notice icon={<TriangleAlert className="size-3.5" />} tone="amber">管理员尚未配置注册邮件，普通邮箱注册暂不可用。</Notice> : null}
 
             <div className="grid gap-4 sm:grid-cols-2">
                 <AuthField label="用户名"><Input size="large" prefix={<UserRound className="size-4 text-white/35" />} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="3-32 位字符" autoComplete="username" required disabled={disabled} /></AuthField>
                 <AuthField label="显示名称"><Input size="large" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="不填则使用用户名" disabled={disabled} /></AuthField>
             </div>
 
-            <AuthField label="邮箱"><Input size="large" prefix={<Mail className="size-4 text-white/35" />} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="用于登录与安全验证" autoComplete="email" required={!settings?.firstUser} disabled={disabled} /></AuthField>
+            <AuthField label="邮箱（选填）"><Input size="large" prefix={<Mail className="size-4 text-white/35" />} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="可用于邮箱登录" autoComplete="email" disabled={disabled} /></AuthField>
 
-            {requireCode ? (
-                <AuthField label="邮箱验证码">
-                    <div className="grid grid-cols-[minmax(0,1fr)_116px] gap-2">
-                        <Input size="large" prefix={<ShieldCheck className="size-4 text-white/35" />} value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位验证码" inputMode="numeric" autoComplete="one-time-code" required disabled={disabled} />
-                        <Button size="large" loading={sendingCode} disabled={disabled || countdown > 0} onClick={() => void sendCode()}>{countdown > 0 ? `${countdown}s` : "获取验证码"}</Button>
-                    </div>
+            {requireInvitation ? (
+                <AuthField label="邀请码">
+                    <Input size="large" prefix={<KeyRound className="size-4 text-white/35" />} value={invitationCode} onChange={(event) => setInvitationCode(event.target.value.toUpperCase())} placeholder="请输入管理员提供的邀请码" autoComplete="off" required disabled={disabled} />
                 </AuthField>
             ) : null}
 
@@ -107,7 +77,7 @@ export default function RegisterPage() {
             </div>
 
             <Button type="primary" htmlType="submit" size="large" block loading={submitting} disabled={disabled} icon={<ArrowRight className="size-4" />} iconPlacement="end">创建账号</Button>
-            {settings?.linuxdoEnabled ? <><Divider plain className="!border-white/10 !text-white/30">或</Divider><Button size="large" block icon={<LinuxDOIcon />} href={linuxDOLoginURL(next)}>使用 Linux.do 注册 / 登录</Button></> : null}
+            {settings?.linuxdoEnabled ? <><Divider plain className="!border-white/10 !text-white/30">已有绑定账号</Divider><Button size="large" block icon={<LinuxDOIcon />} href={linuxDOLoginURL(next)}>使用 Linux.do 登录</Button></> : null}
         </form>
     );
 }

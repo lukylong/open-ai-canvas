@@ -20,6 +20,7 @@ export type LocalUser = {
 
 export type RuntimeLimits = {
     activeTaskLimit: number;
+    batchMaxCount: number;
     resourceUploadMB: number;
     sessionUploadMB: number;
 };
@@ -57,16 +58,18 @@ type UserStore = {
     clearSession: () => void;
 };
 
+const defaultRuntimeLimits: RuntimeLimits = { activeTaskLimit: 5, batchMaxCount: 1_000, resourceUploadMB: 50, sessionUploadMB: 32 };
+
 export const useUserStore = create<UserStore>()((set) => ({
     hydrated: false,
     user: null,
-    runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, sessionUploadMB: 32 },
+    runtimeLimits: defaultRuntimeLimits,
     drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE },
     features: defaultFeatureAvailability,
     setUser: (user) => set({ user }),
-    setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits || { activeTaskLimit: 5, resourceUploadMB: 50, sessionUploadMB: 32 } }),
+    setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits ? { ...defaultRuntimeLimits, ...runtimeLimits } : defaultRuntimeLimits }),
     setDrawingEngine: (drawingEngine) => set({ drawingEngine: drawingEngine || { defaultEngine: DEFAULT_DRAWING_ENGINE } }),
     setFeatures: (features) => set({ features: features ? { ...defaultFeatureAvailability, ...features } : defaultFeatureAvailability }),
     setHydrated: (hydrated) => set({ hydrated }),
-    clearSession: () => set({ user: null, runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, sessionUploadMB: 32 }, drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
+    clearSession: () => set({ user: null, runtimeLimits: defaultRuntimeLimits, drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
 }));

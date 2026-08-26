@@ -1,0 +1,12 @@
+---
+title: 后续事项
+description: ZQ 能力迁移后续非阻塞工作
+---
+
+# 后续事项
+
+- 为生产环境编写一次真实 ZQ PostgreSQL 到影策 PostgreSQL 的演练报告，并人工处理 `migration_conflicts`。
+- 根据实际 TTS Provider 合同确认 `reference_audio`、`reference_text` 和 `voice_profile` 字段命名；当前字段用于 `async-audio` 协议。
+- 为管理员增加迁移 run/conflict 的网页只读面板。
+- 对每个 ComfyUI workflow 在目标 GPU 做节点/模型/显存基线，并保存代表性输出。
+- 生产量级显著增长后，再把素材库内最多 1000 条的分发记录抽成带游标分页的独立状态页。

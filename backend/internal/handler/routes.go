@@ -50,6 +50,77 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, task)
 	})
+	r.POST("/task-batches", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		policy, available := loadRuntimePolicy(c, svc)
+		if !available || !enforceRateLimit(c, "task-batches:"+user.ID, policy.Request.TaskCreatePerMinute, time.Minute) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<20)
+		var req service.CreateTaskBatchRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		batch, err := svc.CreateTaskBatch(user.ID, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, batch)
+	})
+	r.GET("/task-batches", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+		batches, err := svc.TaskBatches(user.ID, limit)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, batches)
+	})
+	r.GET("/task-batches/:id", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		batch, err := svc.TaskBatchDetail(user.ID, c.Param("id"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, batch)
+	})
+	for path, action := range map[string]func(string, string) (*service.TaskBatchDetail, error){
+		"pause":        svc.PauseTaskBatch,
+		"resume":       svc.ResumeTaskBatch,
+		"cancel":       svc.CancelWaitingTaskBatchItems,
+		"retry-failed": svc.RetryFailedTaskBatchItems,
+	} {
+		path, action := path, action
+		r.POST("/task-batches/:id/"+path, func(c *gin.Context) {
+			user, err := currentUser(c, svc)
+			if err != nil {
+				failService(c, err)
+				return
+			}
+			batch, err := action(user.ID, c.Param("id"))
+			if err != nil {
+				failService(c, err)
+				return
+			}
+			ok(c, batch)
+		})
+	}
 	r.GET("/tasks", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

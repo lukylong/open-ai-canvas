@@ -8,6 +8,7 @@ import {
     HardDrive,
     Home,
     Infinity as InfinityIcon,
+    Images,
     KeyRound,
     Layers3,
     Mail,
@@ -49,6 +50,8 @@ const adminNavigation: Array<{ label: string; items: AdminNavigationItem[] }> = 
         label: "平台资源",
         items: [
             { path: "/admin/users", label: "用户管理", description: "账号、角色与状态", icon: <UsersRound className="size-4" /> },
+            { path: "/admin/generated-content", label: "用户内容", description: "生成记录、提示词与媒体", icon: <Images className="size-4" /> },
+            { path: "/admin/invitation-codes", label: "邀请码", description: "注册准入与使用记录", icon: <KeyRound className="size-4" /> },
             { path: "/admin/channels", label: "系统渠道", description: "渠道、模型与售价", icon: <RadioTower className="size-4" /> },
             { path: "/admin/models", label: "前台模型", description: "展示、线路与用户价格", icon: <Layers3 className="size-4" /> },
             { path: "/admin/prompt-templates", label: "提示词模板", description: "平台创作策略版本", icon: <MessageSquareText className="size-4" /> },

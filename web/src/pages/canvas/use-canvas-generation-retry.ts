@@ -286,7 +286,7 @@ export function useCanvasGenerationRetry({
                         prompt,
                         config: generationConfig,
                         signal: controller.signal,
-                        metadata: { retry: true, sourceNodeId: sourceNode.id, resolvedCharacterVersions: context?.resolvedCharacterVersions || [], resolvedCharacterVoiceKey: context?.resolvedCharacterVoices[0]?.voiceKey },
+                        metadata: { retry: true, sourceNodeId: sourceNode.id, resolvedCharacterVersions: context?.resolvedCharacterVersions || [], resolvedCharacterVoiceKey: context?.resolvedCharacterVoices[0]?.voiceKey, resolvedCharacterVoice: context?.resolvedCharacterVoices[0] },
                     });
                     return;
                 }

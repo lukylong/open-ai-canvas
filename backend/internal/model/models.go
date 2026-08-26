@@ -80,6 +80,7 @@ const (
 	ChannelInterfaceGeminiVeo             ChannelInterfaceType = "gemini-veo"
 	ChannelInterfaceNovitaVideo           ChannelInterfaceType = "novita-video"
 	ChannelInterfaceMiniMaxVideo          ChannelInterfaceType = "minimax-video"
+	ChannelInterfaceComfyUIWorkflow       ChannelInterfaceType = "comfyui-workflow"
 
 	ApiCallStatusSucceeded ApiCallStatus = "succeeded"
 	ApiCallStatusFailed    ApiCallStatus = "failed"

@@ -56,7 +56,22 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     }, [config, options]);
     const storedCurrent = value?.trim() || "";
     // 参数档位会在选中模型后由调用方归一到其能力配置，不能因为旧模型留下的参数而禁止切换。
-    const selectionRequirements = requirements ? { ...requirements, videoSeconds: undefined, imageSize: undefined, options: undefined } : undefined;
+    // 没有参考素材时也要允许先选择图生视频等“必需输入”模型；选中后页面才会开放附件入口。
+    // 已经带有参考素材时仍保留输入约束，避免切换到无法接收当前素材的模型。
+    const referenceInputCount = requirements?.input
+        ? requirements.input.imageCount + requirements.input.videoCount + requirements.input.audioCount + requirements.input.characterCount
+        : 0;
+    const selectionRequirements = requirements
+        ? {
+            ...requirements,
+            allowMissingInputs: true,
+            input: referenceInputCount > 0 ? requirements.input : undefined,
+            videoOperation: referenceInputCount > 0 ? requirements.videoOperation : undefined,
+            videoSeconds: undefined,
+            imageSize: undefined,
+            options: undefined,
+        }
+        : undefined;
     const resolvedCurrent = resolveCompatibleModel(config, storedCurrent, selectionRequirements) || storedCurrent;
     // 旧画布可能保存过已下架或前端历史内置模型；它们不能重新进入当前可选目录。
     const current = options.includes(resolvedCurrent) ? resolvedCurrent : "";

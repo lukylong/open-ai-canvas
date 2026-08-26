@@ -2,6 +2,7 @@ import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { createGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { createTaskBatch, getTaskBatch, isTaskBatchDetailTerminal, type TaskBatchDetail } from "@/services/api/task-batches";
 import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput, type LocalDreaminaGenerationTask } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
@@ -46,6 +47,7 @@ type BackendGenerationTaskOptions = {
     retryOf?: string;
     retryContextsByBatchIndex?: Array<{ retryOf: string; attemptGroupId: string; clientOperationId: string }>;
     attemptGroupId?: string;
+	onBatchUpdate?: (batch: TaskBatchDetail) => void;
 };
 
 export type GenerationTaskDependencies = {
@@ -112,6 +114,7 @@ export async function runBackendGenerationTask(
 }
 
 export async function runBackendToolGenerationTask(options: {
+    projectId: string;
     prompt: string;
     config: AiConfig;
     messages: ResponseInputMessage[];
@@ -123,6 +126,7 @@ export async function runBackendToolGenerationTask(options: {
     const logicalModelId = logicalModelIDForConfig(options.config);
     if (!logicalModelId) throw new Error("当前模型不是平台系统模型");
     const task = await createGenerationTask({
+        projectId: options.projectId,
         type: "canvas_text",
         operation: "text",
         prompt: options.prompt,
@@ -146,11 +150,14 @@ export async function runBackendToolGenerationTask(options: {
 }
 
 export async function runBackendGenerationTaskBatch(options: BackendGenerationTaskOptions & { count: number }, dependencies: GenerationTaskDependencies = defaultDependencies) {
-    const count = Math.max(1, Math.min(15, Math.floor(Number(options.count)) || 1));
+	const requestedCount = Math.max(1, Math.floor(Number(options.count)) || 1);
     throwIfAborted(options.signal);
     assertClientPromptLimit(options.mode, options.prompt, options.config, options.metadata);
-    if (options.retryContextsByBatchIndex && options.retryContextsByBatchIndex.length !== count) throw new Error("生成重试批次任务数量不匹配");
-    if (isLocalDreaminaModel(options.config.model)) {
+	const logicalModelId = logicalModelIDForConfig(options.config);
+	if (isLocalDreaminaModel(options.config.model)) {
+		const count = Math.min(15, requestedCount);
+		if (requestedCount > 15) throw new Error("本地即梦批量生成最多支持 15 个任务；1000 任务队列需要使用后台平台模型");
+		if (options.retryContextsByBatchIndex && options.retryContextsByBatchIndex.length !== count) throw new Error("生成重试批次任务数量不匹配");
         await dependencies.ensureLocalDreaminaReady?.(options.signal);
         throwIfAborted(options.signal);
         return Promise.allSettled(
@@ -169,9 +176,31 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
                     dependencies,
                 );
             }),
-        );
-    }
-    const prepared = await prepareGenerationReferences(options);
+		);
+	}
+	if (logicalModelId && requestedCount > 1) {
+		if (options.retryContextsByBatchIndex?.length) throw new Error("持久化批次请使用批次失败项重试，不支持整批覆盖重试");
+		const prepared = await prepareGenerationReferences(options);
+		throwIfAborted(options.signal);
+		let detail = await createTaskBatch({
+			count: requestedCount,
+			idempotencyKey: options.clientOperationId || dependencies.createId(),
+			task: backendGenerationTaskInput({ ...options, config: { ...options.config, count: "1" } }, prepared),
+		});
+		options.onBatchUpdate?.(detail);
+		publishTaskBatchTasks(detail, options.onTaskUpdate);
+		while (!isTaskBatchDetailTerminal(detail)) {
+			await abortableDelay(2_000, options.signal);
+			detail = await getTaskBatch(detail.batch.id, options.signal);
+			options.onBatchUpdate?.(detail);
+			publishTaskBatchTasks(detail, options.onTaskUpdate);
+		}
+		return taskBatchSettledResults(detail);
+	}
+	const count = Math.min(15, requestedCount);
+	if (requestedCount > 15) throw new Error("自定义渠道批量生成最多支持 15 个任务；1000 任务队列需要使用后台平台模型");
+	if (options.retryContextsByBatchIndex && options.retryContextsByBatchIndex.length !== count) throw new Error("生成重试批次任务数量不匹配");
+	const prepared = await prepareGenerationReferences(options);
     throwIfAborted(options.signal);
     return Promise.allSettled(
         Array.from({ length: count }, (_, batchIndex) =>
@@ -185,6 +214,44 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
             ),
         ),
     );
+}
+
+function publishTaskBatchTasks(detail: TaskBatchDetail, onTaskUpdate?: (task: GenerationTask) => void) {
+	if (!onTaskUpdate) return;
+	for (const item of detail.items) {
+		if (item.task) onTaskUpdate(item.task);
+	}
+}
+
+function taskBatchSettledResults(detail: TaskBatchDetail): PromiseSettledResult<BackendGenerationResult>[] {
+	return [...detail.items].sort((left, right) => left.index - right.index).map((item) => {
+		if (item.status === "succeeded" && item.task) {
+			try {
+				return { status: "fulfilled", value: parseBackendGenerationResult(item.task) } as PromiseFulfilledResult<BackendGenerationResult>;
+			} catch (error) {
+				return { status: "rejected", reason: error } as PromiseRejectedResult;
+			}
+		}
+		return { status: "rejected", reason: new Error(item.error || `批次第 ${item.index + 1} 项${item.status}`) } as PromiseRejectedResult;
+	});
+}
+
+function abortableDelay(milliseconds: number, signal?: AbortSignal) {
+	return new Promise<void>((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(new DOMException("Aborted", "AbortError"));
+			return;
+		}
+		const timeout = window.setTimeout(() => {
+			signal?.removeEventListener("abort", abort);
+			resolve();
+		}, milliseconds);
+		const abort = () => {
+			window.clearTimeout(timeout);
+			reject(new DOMException("Aborted", "AbortError"));
+		};
+		signal?.addEventListener("abort", abort, { once: true });
+	});
 }
 
 async function runLocalDreaminaGeneration(options: BackendGenerationTaskOptions, dependencies: GenerationTaskDependencies): Promise<BackendGenerationResult> {
@@ -382,32 +449,36 @@ async function prepareGenerationReferences({
 }
 
 async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
-    const { projectId, mode, prompt, config, signal, metadata, onTaskUpdate } = options;
-    const videoOperation = generationOperation(options);
-    const logicalModelId = logicalModelIDForConfig(config);
-    const task = await dependencies.createTask({
-        ...(projectId ? { projectId } : {}),
-        type: `canvas_${mode}`,
-        operation: mode === "video" ? videoOperation : mode,
-        prompt,
-        model: config.model,
-        ...(logicalModelId ? { logicalModelId } : {}),
-        input: {
-            mode,
-            prompt,
-            config: backendProviderConfig(config),
-            capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
-            textHistory: options.textHistory,
-            referenceImages: prepared.referenceImages,
-            referenceVideos: prepared.referenceVideos,
-            referenceAudios: prepared.referenceAudios,
-            mask: prepared.mask,
-            metadata,
-        },
-    });
+	const { projectId, mode, prompt, config, signal, metadata, onTaskUpdate } = options;
+	const task = await dependencies.createTask(backendGenerationTaskInput(options, prepared));
     onTaskUpdate?.(task);
     const completed = await dependencies.waitTask(task.id, { signal, initialTask: task, onTaskUpdate });
     return parseBackendGenerationResult(completed);
+}
+
+function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences) {
+	const { projectId, mode, prompt, config, metadata } = options;
+	const logicalModelId = logicalModelIDForConfig(config);
+	return {
+		...(projectId ? { projectId } : {}),
+		type: `canvas_${mode}`,
+		operation: mode === "video" ? generationOperation(options) : mode,
+		prompt,
+		model: config.model,
+		...(logicalModelId ? { logicalModelId } : {}),
+		input: {
+			mode,
+			prompt,
+			config: backendProviderConfig(config),
+			capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
+			textHistory: options.textHistory,
+			referenceImages: prepared.referenceImages,
+			referenceVideos: prepared.referenceVideos,
+			referenceAudios: prepared.referenceAudios,
+			mask: prepared.mask,
+			metadata,
+		},
+	};
 }
 
 async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAudio) {

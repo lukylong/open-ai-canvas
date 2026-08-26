@@ -224,10 +224,11 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         source: "generation-task",
         generationEffectKey: input.effectKey,
         taskId: input.task.id,
+        batchId: input.task.batchId,
         outputIndex: input.output.outputIndex,
         conversationId: input.task.clientContext?.conversationId,
         messageId: input.task.clientContext?.messageId,
-        batchIndex: input.task.clientContext?.batchIndex,
+        batchIndex: input.task.batchIndex ?? input.task.clientContext?.batchIndex,
     };
 
     if (input.output.mediaType === "image") {

@@ -228,6 +228,15 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         image.outputFormat = { supported: false };
         image.maxOutputs = 4;
     }
+    if (protocol === "comfyui-workflow") {
+        image.references.maxImages = 9;
+        image.references.maskSupported = false;
+        image.quality.supported = false;
+        image.transparentBackground.supported = false;
+        image.responseFormat.supported = false;
+        image.outputFormat.supported = false;
+        image.maxOutputs = 4;
+    }
     if (protocol !== "grok-image" && model.trim().toLowerCase().startsWith("grok-imagine-image")) {
         image.references.maxImages = 0;
         image.references.maskSupported = false;
@@ -316,6 +325,14 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.defaultResolution = "768P";
         video.watermark = { supported: true, default: false };
         video.operations.push("reference_to_video");
+    }
+    if (protocol === "comfyui-workflow") {
+        video.references.maxImages = 9;
+        video.references.maxImageBytes = 30 * 1024 * 1024;
+        video.duration = { selection: "range", min: 1, max: 30, step: 1, default: 5 };
+        video.resolutions = ["480p", "720p", "1080p"];
+        video.defaultResolution = "720p";
+        video.operations = ["text_to_video", "image_to_video", "reference_to_video"];
     }
     return { version: 1, text, image: defaultImageCapabilityConfig(protocol, model), video };
 }

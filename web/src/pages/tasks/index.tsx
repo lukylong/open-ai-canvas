@@ -10,7 +10,7 @@ import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerat
 import { formatTaskKind, isGenerationTaskSubmissionUncertain, operationOptions, statusLabel } from "@/lib/generation-task-display";
 import { backendProviderConfig, logicalModelIDForConfig } from "@/services/api/generation-task";
 
-import { createAgentSession, createGenerationTask, deleteGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, refreshGenerationTaskStatus, retryGenerationTask, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
+import { createGenerationTask, deleteGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, refreshGenerationTaskStatus, retryGenerationTask, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
 import { syncGenerationTaskToCanvasStore } from "@/lib/canvas/canvas-generation-task-sync";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { resolveModelRequestConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -377,40 +377,29 @@ export default function TasksPage() {
         const values = await form.validateFields();
         setCreating(true);
         try {
-            if (values.operation === "agent_session") {
-                const textModel = values.model?.trim() || effectiveConfig.textModel || effectiveConfig.model;
-                if (!isAiConfigReady(effectiveConfig, textModel)) {
-                    message.error("请先在设置里配置可用的文本模型、Base URL 和 API Key");
-                    return;
-                }
-                const requestConfig = resolveModelRequestConfig(effectiveConfig, textModel);
-                const detail = await createAgentSession({ projectId: values.projectId, prompt: values.prompt, config: backendProviderConfig(requestConfig), ...(logicalModelIDForConfig(requestConfig) ? { logicalModelId: logicalModelIDForConfig(requestConfig) } : {}) });
-                setTasks((items) => [...detail.tasks, ...items]);
-            } else {
-                const videoModel = values.model?.trim() || effectiveConfig.videoModel || effectiveConfig.model;
-                if (values.operation !== "compare_versions" && !isAiConfigReady(effectiveConfig, videoModel)) {
-                    message.error("请先在设置里配置可用的视频模型、Base URL 和 API Key");
-                    return;
-                }
-                const requestConfig = resolveModelRequestConfig(effectiveConfig, videoModel);
-                const task = await createGenerationTask({
-                    projectId: values.projectId,
-                    type: `video_${values.operation}`,
-                    operation: values.operation,
-                    prompt: values.prompt,
-                    provider: values.operation === "compare_versions" ? "internal-agent" : "openai-compatible",
-                    model: values.operation === "compare_versions" ? "version-router" : requestConfig.model,
-					...(values.operation !== "compare_versions" && logicalModelIDForConfig(requestConfig) ? { logicalModelId: logicalModelIDForConfig(requestConfig) } : {}),
-                    input: {
-                        source: "tasks-page",
-                        mode: values.operation === "compare_versions" ? "workflow" : "video",
-                        prompt: buildVideoOperationPrompt(values.operation, values.prompt),
-                        config: values.operation === "compare_versions" ? undefined : backendProviderConfig(requestConfig),
-                        metadata: { videoEditOperation: values.operation },
-                    },
-                });
-                setTasks((items) => [task, ...items]);
+            const videoModel = values.model?.trim() || effectiveConfig.videoModel || effectiveConfig.model;
+            if (values.operation !== "compare_versions" && !isAiConfigReady(effectiveConfig, videoModel)) {
+                message.error("请先在设置里配置可用的视频模型、Base URL 和 API Key");
+                return;
             }
+            const requestConfig = resolveModelRequestConfig(effectiveConfig, videoModel);
+            const task = await createGenerationTask({
+                projectId: values.projectId,
+                type: `video_${values.operation}`,
+                operation: values.operation,
+                prompt: values.prompt,
+                provider: values.operation === "compare_versions" ? "internal-agent" : "openai-compatible",
+                model: values.operation === "compare_versions" ? "version-router" : requestConfig.model,
+                ...(values.operation !== "compare_versions" && logicalModelIDForConfig(requestConfig) ? { logicalModelId: logicalModelIDForConfig(requestConfig) } : {}),
+                input: {
+                    source: "tasks-page",
+                    mode: values.operation === "compare_versions" ? "workflow" : "video",
+                    prompt: buildVideoOperationPrompt(values.operation, values.prompt),
+                    config: values.operation === "compare_versions" ? undefined : backendProviderConfig(requestConfig),
+                    metadata: { videoEditOperation: values.operation },
+                },
+            });
+            setTasks((items) => [task, ...items]);
             setStatusFilter("active");
             setPage(1);
             setCreateOpen(false);
@@ -504,9 +493,9 @@ export default function TasksPage() {
                 </div>
             </WorkspacePage>
             <Modal className="library-modal" title="新建异步生成任务" open={createOpen} onCancel={() => setCreateOpen(false)} onOk={submitTask} confirmLoading={creating} okText="创建任务">
-                <Form form={form} layout="vertical" initialValues={{ operation: "agent_session" }}>
+                <Form form={form} layout="vertical" initialValues={{ operation: "text_to_video" }}>
                     <Form.Item name="operation" label="任务类型" rules={[{ required: true, message: "请选择任务类型" }]}>
-                        <Select options={operationOptions} />
+                        <Select options={operationOptions.filter((item) => item.value !== "agent_session")} />
                     </Form.Item>
                     <Form.Item name="prompt" label="创作指令" rules={[{ required: true, message: "请输入创作指令" }]}>
                         <Input.TextArea rows={5} placeholder="描述短剧、MV、TVC 或要执行的视频编辑操作" />

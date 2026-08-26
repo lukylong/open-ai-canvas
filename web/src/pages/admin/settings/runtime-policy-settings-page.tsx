@@ -42,6 +42,7 @@ const concurrencyFields: PolicyField[] = [
     { group: "task", name: "workerConcurrency", label: "Worker 并发", extra: "集群同时执行的后台任务数。", unit: "个", max: 999 },
     { group: "task", name: "channelConcurrency", label: "全局渠道并发", extra: "渠道选择跟随系统时采用的并发上限。", unit: "个", max: 999 },
     { group: "task", name: "activeTaskLimit", label: "账号活动任务", extra: "单账号跨项目同时排队或运行的任务总数。", unit: "个", max: 999 },
+    { group: "task", name: "batchMaxCount", label: "单批生成任务", extra: "一次批量操作最多加入的图片或视频任务数；它不等于同时运行数。", unit: "个/批", max: 1_000 },
 ];
 
 const timeoutFields: PolicyField[] = [

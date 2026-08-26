@@ -91,6 +91,7 @@ export type VoiceProfile = {
     language: string;
     timbre: string;
     sampleResourceId?: string;
+    referenceText?: string;
     compatibleModels: string[];
     status: string;
 };
@@ -287,6 +288,34 @@ export function createProjectAssetVersion(projectId: string, assetId: string, in
 
 export function listVoiceProfiles() {
     return request<{ profiles: VoiceProfile[] }>(api.get("/voice-profiles"));
+}
+
+export type DirectorPromptCandidate = {
+    key: "narrative" | "visual";
+    name: string;
+    summary: string;
+    prompt: string;
+    recommended: boolean;
+};
+
+export type DirectorPromptProposal = {
+    id: string;
+    projectId?: string;
+    sourceText: string;
+    candidates: DirectorPromptCandidate[];
+    recommendedKey: DirectorPromptCandidate["key"];
+    selectedKey?: DirectorPromptCandidate["key"];
+    status: "awaiting_selection" | "selected";
+    createdAt: string;
+    selectedAt?: string;
+};
+
+export function createDirectorPromptProposal(input: { projectId?: string; sourceText: string }) {
+    return request<{ proposal: DirectorPromptProposal }>(api.post("/director/proposals", input));
+}
+
+export function selectDirectorPromptProposal(id: string, candidateKey: DirectorPromptCandidate["key"]) {
+    return request<{ proposal: DirectorPromptProposal }>(api.post(`/director/proposals/${encodeURIComponent(id)}/select`, { candidateKey }));
 }
 
 export function createProjectCharacter(projectId: string, input: { name: string; definition?: Record<string, unknown> }) {

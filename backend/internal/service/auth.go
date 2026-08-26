@@ -27,11 +27,12 @@ var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{3,32}$`)
 type AuthError = AppError
 
 type RegisterRequest struct {
-	Username    string `json:"username"`
-	Email       string `json:"email"`
-	EmailCode   string `json:"emailCode"`
-	DisplayName string `json:"displayName"`
-	Password    string `json:"password"`
+	Username       string `json:"username"`
+	Email          string `json:"email"`
+	EmailCode      string `json:"emailCode"`
+	InvitationCode string `json:"invitationCode"`
+	DisplayName    string `json:"displayName"`
+	Password       string `json:"password"`
 }
 
 type LoginRequest struct {
@@ -40,11 +41,12 @@ type LoginRequest struct {
 }
 
 type PublicAuthSettings struct {
-	FirstUser           bool `json:"firstUser"`
-	RegistrationEnabled bool `json:"registrationEnabled"`
-	LinuxDOEnabled      bool `json:"linuxdoEnabled"`
-	EmailEnabled        bool `json:"emailEnabled"`
-	EmailCodeRequired   bool `json:"emailCodeRequired"`
+	FirstUser              bool `json:"firstUser"`
+	RegistrationEnabled    bool `json:"registrationEnabled"`
+	LinuxDOEnabled         bool `json:"linuxdoEnabled"`
+	EmailEnabled           bool `json:"emailEnabled"`
+	EmailCodeRequired      bool `json:"emailCodeRequired"`
+	InvitationCodeRequired bool `json:"invitationCodeRequired"`
 }
 
 type AuthSessionResult struct {
@@ -93,7 +95,7 @@ func (s *Service) PublicAuthSettings() (*PublicAuthSettings, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &PublicAuthSettings{FirstUser: false, RegistrationEnabled: registrationEnabled, LinuxDOEnabled: s.LinuxDOEnabled(), EmailEnabled: emailEnabled, EmailCodeRequired: true}, nil
+	return &PublicAuthSettings{FirstUser: false, RegistrationEnabled: registrationEnabled, LinuxDOEnabled: s.LinuxDOEnabled(), EmailEnabled: emailEnabled, EmailCodeRequired: false, InvitationCodeRequired: true}, nil
 }
 
 func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
@@ -117,7 +119,6 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	var verifiedCode *model.EmailVerificationCode
 	if count > 0 {
 		registrationEnabled, err := s.RegistrationEnabled()
 		if err != nil {
@@ -126,12 +127,8 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 		if !registrationEnabled {
 			return nil, Forbidden("管理员未开放新用户注册")
 		}
-		if email == "" {
-			return nil, BadAuthRequest("请输入邮箱")
-		}
-		verifiedCode, err = s.VerifyRegistrationEmailCode(email, req.EmailCode)
-		if err != nil {
-			return nil, err
+		if normalizeInvitationCode(req.InvitationCode) == "" {
+			return nil, BadAuthRequest("请输入邀请码")
 		}
 	}
 	if _, err := s.repo.UserByUsername(username); err == nil {
@@ -156,6 +153,7 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 		Username:     username,
 		Email:        email,
 		DisplayName:  displayName,
+		SourceSystem: "canvas",
 		Role:         model.UserRoleUser,
 		Status:       model.UserStatusActive,
 		PasswordHash: passwordHash,
@@ -165,9 +163,9 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 	if count == 0 {
 		user.Role = model.UserRoleAdmin
 	}
-	if verifiedCode != nil {
-		if err := s.repo.CreateUserWithEmailVerification(&user, verifiedCode.ID, time.Now()); err != nil {
-			return nil, err
+	if count > 0 {
+		if err := s.repo.CreateUserWithInvitation(&user, invitationCodeHash(req.InvitationCode), newID(), now); err != nil {
+			return nil, invitationError(err)
 		}
 	} else if err := s.repo.Create(&user); err != nil {
 		return nil, err
@@ -244,7 +242,7 @@ func (s *Service) CurrentUser(cookieValue string) (*model.User, error) {
 
 // 认证响应只补充当前用户自己的第三方公开身份，不把身份表或密钥字段暴露给其他列表接口。
 func (s *Service) PublicAuthUser(user *model.User) (AuthUser, error) {
-	result := AuthUser{User: *user}
+	result := AuthUser{User: *user, AvatarURL: user.AvatarURL}
 	identity, err := s.repo.UserIdentityForUser(user.ID, "linuxdo")
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return result, nil

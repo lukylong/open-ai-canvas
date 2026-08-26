@@ -207,6 +207,37 @@ describe("逻辑模型选择", () => {
         })).toBe("");
     });
 
+    test("模型选择器可先选择需要参考图的逻辑模型", () => {
+        const model = "image-required-video";
+        const channel: ModelChannel = {
+            id: "logical-video",
+            name: "平台视频模型",
+            baseUrl: "/api",
+            apiKey: "system",
+            apiFormat: "openai",
+            scope: "system",
+            models: [model],
+            modelCosts: [{
+                model,
+                capability: "video",
+                billingMode: "per_second",
+                unitPriceMicrocredits: 1,
+                logicalCapabilitySpec: {
+                    version: 1,
+                    capability: "video",
+                    operations: ["image_to_video"],
+                    inputs: { image: { min: 1, max: 9 } },
+                },
+            }],
+        };
+        const value = `logical-video::${model}`;
+        const config = { ...defaultConfig, channels: [channel], models: [value], videoModels: [value], videoModel: value };
+        const input = { textCount: 1, imageCount: 0, videoCount: 0, audioCount: 0, characterCount: 0 };
+
+        expect(modelCompatibilityError(config, value, { capability: "video", input })).toContain("image输入需为 1-9 个");
+        expect(modelCompatibilityError(config, value, { capability: "video", input: undefined, allowMissingInputs: true })).toBe("");
+    });
+
     test("已保存的旧 SKU 选择会解析到新的模型家族", () => {
         const channel: ModelChannel = {
             id: "managed",

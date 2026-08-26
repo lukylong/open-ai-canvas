@@ -32,6 +32,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const activeTaskLimit = useUserStore((state) => state.runtimeLimits.activeTaskLimit);
+    const batchMaxCount = useUserStore((state) => state.runtimeLimits.batchMaxCount);
     const schedulingRef = useRef(false);
     const controllersRef = useRef(new Map<string, AbortController>());
 
@@ -65,6 +66,10 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                 message.info("所选镜头已在生成批次中");
                 return;
             }
+            if (availableTargets.length > batchMaxCount) {
+                message.error(`单次批量生成最多支持 ${batchMaxCount} 个任务，请拆分后提交`);
+                return;
+            }
             const now = new Date().toISOString();
             const batch: CanvasGenerationBatch = {
                 id: nanoid(),
@@ -91,7 +96,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             );
             return batch.id;
         },
-        [message, nodesRef, projectId, setNodes],
+        [batchMaxCount, message, nodesRef, projectId, setNodes],
     );
 
     const reconcileBatches = useCallback(() => {

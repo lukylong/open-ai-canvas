@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"infinite-canvas/backend/internal/model"
 )
@@ -36,6 +37,10 @@ func (w *sessionCreationCoordinator) create(userID string, req CreateSessionRequ
 	if err := validateStoryboardContext(req.ProjectStyle, req.Characters); err != nil {
 		return nil, err
 	}
+	proposal, expandedPrompt, err := s.selectedDirectorPrompt(userID, req.DirectorProposalID, req.ProjectID, prompt)
+	if err != nil {
+		return nil, err
+	}
 	compactedSnapshot := compactPersistedValue(req.CanvasSnapshot)
 	snapshotJSON, err := json.Marshal(compactedSnapshot)
 	if err != nil {
@@ -49,10 +54,20 @@ func (w *sessionCreationCoordinator) create(userID string, req CreateSessionRequ
 	if err := w.persistDraft(userID, prompt, snapshotJSON, session, policy); err != nil {
 		return nil, err
 	}
-	taskReq := CreateTaskRequest{SessionID: session.ID, ProjectID: req.ProjectID, Type: "agent_storyboard", Operation: "storyboard", Prompt: prompt, Provider: "openai-compatible", Model: req.Config.Model, LogicalModelID: req.LogicalModelID, Input: map[string]any{"mode": "text", "references": req.References, "canvasSnapshot": compactedSnapshot, "requirements": req.Requirements, "canvasAssets": req.CanvasAssets, "projectStyle": req.ProjectStyle, "characters": req.Characters, "config": req.Config}}
+	if err := s.repo.ConsumeDirectorPromptProposal(userID, proposal.ID, session.ID, time.Now()); err != nil {
+		if cleanupErr := w.deleteDraft(userID, session.ID); cleanupErr != nil {
+			return nil, fmt.Errorf("绑定导演方案失败：%v；清理会话失败：%w", err, cleanupErr)
+		}
+		return nil, BadAuthRequest("导演扩写方案已被使用，请重新选择")
+	}
+	taskReq := CreateTaskRequest{SessionID: session.ID, ProjectID: req.ProjectID, Type: "agent_storyboard", Operation: "storyboard", Prompt: expandedPrompt, Provider: "openai-compatible", Model: req.Config.Model, LogicalModelID: req.LogicalModelID, Input: map[string]any{"mode": "text", "sourcePrompt": prompt, "directorProposalId": proposal.ID, "directorCandidateKey": proposal.SelectedKey, "references": req.References, "canvasSnapshot": compactedSnapshot, "requirements": req.Requirements, "canvasAssets": req.CanvasAssets, "projectStyle": req.ProjectStyle, "characters": req.Characters, "config": req.Config}}
 	if _, err := s.CreateTask(userID, taskReq); err != nil {
+		releaseErr := s.repo.ReleaseDirectorPromptProposal(userID, proposal.ID, session.ID, time.Now())
 		if cleanupErr := w.deleteDraft(userID, session.ID); cleanupErr != nil {
 			return nil, fmt.Errorf("创建会话任务失败：%v；清理会话失败：%w", err, cleanupErr)
+		}
+		if releaseErr != nil {
+			return nil, fmt.Errorf("创建会话任务失败：%v；释放导演方案失败：%w", err, releaseErr)
 		}
 		return nil, err
 	}

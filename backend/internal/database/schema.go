@@ -21,6 +21,8 @@ func Models() []any {
 		&model.UserIdentity{},
 		&model.OAuthState{},
 		&model.EmailVerificationCode{},
+		&model.InvitationCode{},
+		&model.InvitationCodeUsage{},
 		&model.ModelChannel{},
 		&model.ChannelModel{},
 		&model.ChannelModelPriceTier{},
@@ -41,6 +43,12 @@ func Models() []any {
 		&model.SystemSetting{},
 		&model.UserOSSSetting{},
 		&model.UserDailyUploadUsage{},
+		&model.MigrationRun{},
+		&model.MigrationEntityMap{},
+		&model.MigrationConflict{},
+		&model.DistributionPublication{},
+		&model.DistributionOutbox{},
+		&model.DirectorPromptProposal{},
 		&model.Skill{},
 		&model.UserSkillState{},
 		&model.Resource{},
@@ -68,6 +76,8 @@ func Models() []any {
 		&model.UserPromptCustomization{},
 		&model.Announcement{},
 		&model.UserAnnouncementRead{},
+		&model.TaskBatch{},
+		&model.TaskBatchItem{},
 		&model.Task{},
 		&model.TaskTextDelta{},
 		&model.Session{},
@@ -92,6 +102,9 @@ func MigrateSchema(db *gorm.DB) error {
 		return err
 	}
 	if err := db.AutoMigrate(Models()...); err != nil {
+		return err
+	}
+	if err := migrateAssetRepresentationTaskRoleIndex(db); err != nil {
 		return err
 	}
 	if err := migrateChannelModelPriceTierSelectors(db); err != nil {
@@ -127,6 +140,40 @@ func MigrateSchema(db *gorm.DB) error {
 		return err
 	}
 	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nonempty ON users(lower(email)) WHERE email <> ''").Error
+}
+
+// migrateAssetRepresentationTaskRoleIndex keeps task outputs unique while
+// allowing imported or manually created asset versions to omit task_id. Empty
+// strings are values (not NULL) in SQLite/PostgreSQL, so the legacy full unique
+// index incorrectly allowed only one task-less representation per role.
+func migrateAssetRepresentationTaskRoleIndex(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&model.AssetRepresentation{}) {
+		return nil
+	}
+	wanted := "where task_id <> ''"
+	definition := ""
+	switch db.Dialector.Name() {
+	case "sqlite":
+		if err := db.Raw("SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'index' AND name = ?", "idx_asset_representations_task_role").Scan(&definition).Error; err != nil {
+			return err
+		}
+	case "postgres":
+		if err := db.Raw("SELECT COALESCE(indexdef, '') FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?", "idx_asset_representations_task_role").Scan(&definition).Error; err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("数据库 %s 不支持 asset representation 部分唯一索引", db.Dialector.Name())
+	}
+	normalized := strings.Join(strings.Fields(strings.ToLower(definition)), " ")
+	if strings.Contains(normalized, wanted) {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("DROP INDEX IF EXISTS idx_asset_representations_task_role").Error; err != nil {
+			return err
+		}
+		return tx.Exec("CREATE UNIQUE INDEX idx_asset_representations_task_role ON asset_representations(task_id, role) WHERE task_id <> ''").Error
+	})
 }
 
 // migrateChannelModelPriceTierSelectors upgrades the old video-only unique key to

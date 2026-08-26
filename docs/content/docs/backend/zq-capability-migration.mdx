@@ -1,0 +1,95 @@
+---
+title: ZQ 能力迁移运行手册
+description: 从 ZQ Media Studio 只读迁移用户、邀请、素材和声音档案
+---
+
+# ZQ 能力迁移运行手册
+
+## 迁移范围
+
+迁移 `accounts`、`invitation_codes`、`invitation_code_usages`、`assets` 和 `voice_profiles`。源 PostgreSQL 会话执行 `SET default_transaction_read_only = on`。媒体不复制，只重建影策 Resource/Asset/Version/Representation 并引用原 COS 对象。
+
+## 上线顺序
+
+1. 备份影策目标数据库并记录当前镜像标签。
+2. 部署包含新 schema 和迁移命令的 backend，但保持 ZQ 对用户可写。
+3. 创建或提升影策管理员：
+
+```bash
+docker compose -f docker-compose.deploy.yml run --rm \
+  -e CANVAS_ADMIN_PASSWORD='在交互环境注入' \
+  backend create-admin --username admin --target-driver postgres
+```
+
+4. 将 ZQ 环境文件只读挂入一次性容器，先盘点：
+
+```bash
+docker compose -f docker-compose.deploy.yml run --rm \
+  -v /path/to/zq.env:/run/secrets/zq.env:ro \
+  backend migrate-zq-studio inventory --source-env /run/secrets/zq.env
+```
+
+5. 执行全量和校验：
+
+```bash
+docker compose -f docker-compose.deploy.yml run --rm \
+  -v /path/to/zq.env:/run/secrets/zq.env:ro \
+  backend migrate-zq-studio backfill --source-env /run/secrets/zq.env
+
+docker compose -f docker-compose.deploy.yml run --rm \
+  -v /path/to/zq.env:/run/secrets/zq.env:ro \
+  backend migrate-zq-studio verify --source-env /run/secrets/zq.env
+```
+
+6. 在切换窗口运行增量轮询。`--overlap` 会重复读取边界数据，映射表保证幂等：
+
+```bash
+docker compose -f docker-compose.deploy.yml run --rm \
+  -v /path/to/zq.env:/run/secrets/zq.env:ro \
+  backend migrate-zq-studio follow --source-env /run/secrets/zq.env --interval 5s --overlap 5m
+```
+
+7. 停止 ZQ 写入后再执行一轮 `follow --once` 和 `verify`，随后切换入口。
+
+`verify` 只有在 missing 与 unresolved conflict 都为 0 时才返回成功。修正目标账号冲突后重新执行 `backfill`，映射会从 conflict 收敛为 merged。
+
+## 当前 Docker SQLite 部署的增量同步
+
+仓库提供 `scripts/sync-zq-incremental.sh`。脚本不会重建或停止 Canvas 的 backend/web 容器；它会在目标卷中做 SQLite 在线备份、按上次成功水位加重叠窗口增量读取，并在单次运行后执行 `verify`。在同时运行 ZQ 与影策的 AI 服务器上，`ZQ_SOURCE_MODE=auto` 会直接加入 ZQ 数据网络；若本机没有 ZQ 容器则切换为临时只读 SSH 数据库通道。数据库凭据只存在于运行期间的 `0600` 临时文件，退出时自动删除。
+
+同步范围固定为账号、素材、邀请码及使用记录、声音档案。历史消息、旧生成任务实体和通知不读取；素材自身的 `generation_task_id`、`batch_id`、`batch_start_ordinal`、`batch_index` 和 `ordinal` 会继续写入素材 metadata，供影策按系列分组、排序和批量分发。
+
+手动同步一次新数据：
+
+```bash
+./scripts/sync-zq-incremental.sh once
+```
+
+持续轮询；按 `Ctrl-C` 结束：
+
+```bash
+INTERVAL=5s OVERLAP=5m ./scripts/sync-zq-incremental.sh watch
+```
+
+可通过 `ZQ_SOURCE_MODE=local|ssh|auto`、`ZQ_SSH_ALIAS`、`CANVAS_MIGRATION_IMAGE`、`CANVAS_BACKUP_IMAGE`、`CANVAS_DATA_VOLUME` 和 `CANVAS_HEALTH_URL` 覆盖当前环境默认值。当前服务器默认健康地址为 `http://127.0.0.1:5173/api/health`，在线备份镜像默认为 `python:3.12-slim`。脚本使用目录锁阻止两个同步任务并发写入同一 SQLite 数据库。
+
+## 合并和冲突
+
+- 用户名与非空邮箱同时命中同一影策用户：合并，保留影策密码。
+- 只命中用户名、只命中邮箱、分别命中两个用户：写入 `migration_conflicts`，不自动覆盖。
+- 新迁移用户保留原 bcrypt 哈希；首次影策登录时沿用旧密码。
+- 每个迁移/合并用户通过现有唯一账本获得一次注册赠送积分。
+
+## COS 路径
+
+迁移器同时识别 `asset_metadata.object_key`、`storage_key`、`cos://bucket/key` 和同域 HTTP URL。若源 endpoint 已包含 bucket 域名，则只按源系统的实际物理规则补一次 bucket 前缀，避免再次加倍。
+
+`migrate-zq-studio storage` 会把 ZQ 的腾讯云 COS Bucket、Region、Endpoint、SecretId、SecretKey 写入影策平台存储配置。SecretKey 使用影策数据目录中的 `.settings-key` 加密后入库，命令输出只返回 `hasAccessKeyId` / `hasAccessKeySecret`，不打印密钥。源存储为私有读时不会把普通 COS 域名误当作匿名 CDN；影策通过 COS 签名或同源代理读取。
+
+该命令默认仅在平台 `oss` 配置不存在时创建，重复执行返回 `preserved`，因此增量同步不会覆盖管理员后续修改。只有显式传入 `--replace-platform-storage` 才会覆盖。新增影策资源默认使用 `canvas/` 路径前缀，可通过 `--storage-path-prefix` 调整。
+
+`scripts/sync-zq-incremental.sh` 默认在数据增量同步前执行一次幂等存储配置导入。可用 `SYNC_PLATFORM_STORAGE=0` 跳过；`REPLACE_PLATFORM_STORAGE=1` 仅用于明确需要按 ZQ 运行配置覆盖平台配置的维护窗口。
+
+## 回滚
+
+业务回滚只切回上一版影策镜像和数据库备份；ZQ 源数据及 COS 对象从未被修改。切换前不要运行清理任务。目标侧迁移资源的 `retain_shared` 也会阻止误删共享对象。

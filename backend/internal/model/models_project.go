@@ -10,8 +10,11 @@ type Resource struct {
 	Kind     string         `json:"kind" gorm:"index;size:24"`
 	Status   ResourceStatus `json:"status" gorm:"index;size:24"`
 	Provider string         `json:"provider" gorm:"size:24"`
-	Endpoint string         `json:"endpoint"`
-	Bucket   string         `json:"bucket" gorm:"size:160"`
+	// SourceSystem and DeletionPolicy preserve provenance without coupling reads to the old service.
+	SourceSystem   string `json:"sourceSystem,omitempty" gorm:"index;size:32"`
+	DeletionPolicy string `json:"deletionPolicy,omitempty" gorm:"index;size:24"`
+	Endpoint       string `json:"endpoint"`
+	Bucket         string `json:"bucket" gorm:"size:160"`
 	// 用户 OSS 每次修改都会生成新版本，资源固定引用创建时的存储与密钥；只有同一存储位置才可复用当前 CDN。
 	StorageSettingID string    `json:"-" gorm:"index;size:36"`
 	ObjectKey        string    `json:"objectKey" gorm:"index"`
@@ -91,11 +94,11 @@ type AssetVersion struct {
 
 type AssetRepresentation struct {
 	ID             string    `json:"id" gorm:"primaryKey;size:36"`
-	TaskID         string    `json:"taskId,omitempty" gorm:"index;size:36;uniqueIndex:idx_asset_representations_task_role,priority:1"`
+	TaskID         string    `json:"taskId,omitempty" gorm:"index;size:36;uniqueIndex:idx_asset_representations_task_role,priority:1,where:task_id <> ''"`
 	AssetVersionID string    `json:"assetVersionId" gorm:"index;size:36;uniqueIndex:idx_asset_representations_version_role,priority:1"`
 	ResourceID     string    `json:"resourceId,omitempty" gorm:"index;size:36"`
 	MediaType      string    `json:"mediaType" gorm:"index;size:24"`
-	Role           string    `json:"role" gorm:"index;size:32;uniqueIndex:idx_asset_representations_task_role,priority:2;uniqueIndex:idx_asset_representations_version_role,priority:2"`
+	Role           string    `json:"role" gorm:"index;size:32;uniqueIndex:idx_asset_representations_task_role,priority:2,where:task_id <> '';uniqueIndex:idx_asset_representations_version_role,priority:2"`
 	MetadataJSON   string    `json:"metadataJson" gorm:"type:text"`
 	CreatedAt      time.Time `json:"createdAt"`
 }
@@ -110,7 +113,9 @@ type VoiceProfile struct {
 	Language             string    `json:"language" gorm:"size:80"`
 	Timbre               string    `json:"timbre" gorm:"size:240"`
 	SampleResourceID     string    `json:"sampleResourceId,omitempty" gorm:"index;size:36"`
+	ReferenceText        string    `json:"referenceText,omitempty" gorm:"type:text"`
 	CompatibleModelsJSON string    `json:"compatibleModelsJson" gorm:"type:text"`
+	MetadataJSON         string    `json:"metadataJson,omitempty" gorm:"type:text"`
 	Status               string    `json:"status" gorm:"index;size:24"`
 	CreatedAt            time.Time `json:"createdAt"`
 	UpdatedAt            time.Time `json:"updatedAt"`

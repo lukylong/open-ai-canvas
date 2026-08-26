@@ -12,7 +12,9 @@ COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY backend ./
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/infinite-canvas-backend ./cmd/server \
-    && CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/migrate-sqlite-postgres ./cmd/migrate-sqlite-postgres
+    && CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/migrate-sqlite-postgres ./cmd/migrate-sqlite-postgres \
+    && CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/migrate-zq-studio ./cmd/migrate-zq-studio \
+    && CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/create-admin ./cmd/create-admin
 
 FROM alpine:3.22
 
@@ -28,6 +30,8 @@ ENV CANVAS_BACKEND_DATA_DIR=/data
 RUN mkdir -p /data && chown -R app:app /data
 COPY --from=backend-build /out/infinite-canvas-backend /usr/local/bin/infinite-canvas-backend
 COPY --from=backend-build /out/migrate-sqlite-postgres /usr/local/bin/migrate-sqlite-postgres
+COPY --from=backend-build /out/migrate-zq-studio /usr/local/bin/migrate-zq-studio
+COPY --from=backend-build /out/create-admin /usr/local/bin/create-admin
 
 USER app
 EXPOSE 8080

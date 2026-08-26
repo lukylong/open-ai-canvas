@@ -36,6 +36,10 @@ func (w *taskWorkerCoordinator) start() {
 	go func() {
 		slots := make(chan struct{}, maxChannelConcurrencyLimit)
 		dispatch := func() {
+			// Durable batch items are promoted into the ordinary task queue only
+			// when the account has capacity. Once promoted, the existing worker,
+			// routing, billing and materialization lifecycle remains authoritative.
+			_ = s.promoteTaskBatchItems()
 			setting, err := s.runtimeConcurrencySetting()
 			if err != nil {
 				return
@@ -216,7 +220,7 @@ func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput s
 		return false
 	}
 	resolved, resolveErr := s.resolveProviderConfig(input.Config)
-	return resolveErr == nil && resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2)
+	return resolveErr == nil && (resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2) || resolved.InterfaceType == string(model.ChannelInterfaceComfyUIWorkflow))
 }
 
 func taskTimeoutMessage(taskType string) string {

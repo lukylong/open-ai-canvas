@@ -101,6 +101,9 @@ func (s *Service) deleteUserAssetWithResources(userID string, assetID string) er
 	physicalObjects := map[string]*model.Resource{}
 	for index := range resources {
 		resource := &resources[index]
+		if strings.EqualFold(strings.TrimSpace(resource.DeletionPolicy), "retain_shared") {
+			continue
+		}
 		sharedCount, countErr := s.repo.ResourceStorageReferenceCount(resource, ownedIDs)
 		if countErr != nil {
 			return countErr

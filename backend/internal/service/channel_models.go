@@ -823,6 +823,9 @@ func capabilityForProtocol(protocol model.ChannelInterfaceType) string {
 		return "video"
 	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse:
 		return "text"
+	case model.ChannelInterfaceComfyUIWorkflow:
+		// A workflow declares its own image/video capability in the adapter manifest.
+		return ""
 	default:
 		return ""
 	}

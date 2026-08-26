@@ -105,6 +105,25 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 		clearSessionCookie(c)
 		ok(c, gin.H{"ok": true})
 	})
+	r.POST("/auth/password", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+		var req service.ChangePasswordRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		if err := svc.ChangePassword(user, req); err != nil {
+			failService(c, err)
+			return
+		}
+		clearSessionCookie(c)
+		ok(c, gin.H{"reauthenticationRequired": true})
+	})
 	r.GET("/auth/session", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -178,6 +197,51 @@ func linuxDOCallbackHandler(svc *service.Service) gin.HandlerFunc {
 }
 
 func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
+	r.GET("/admin/invitation-codes", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		invites, err := svc.AdminInvitationCodes(user)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"invitationCodes": invites})
+	})
+	r.POST("/admin/invitation-codes", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+		var req service.CreateInvitationCodeRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		invite, err := svc.CreateInvitationCode(user, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"invitationCode": invite})
+	})
+	r.POST("/admin/invitation-codes/:id/revoke", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		invite, err := svc.RevokeInvitationCode(user, c.Param("id"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"invitationCode": invite})
+	})
 	r.GET("/admin/users", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -577,6 +641,105 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		ok(c, gin.H{"setting": setting})
+	})
+	r.GET("/admin/generated-content/tasks", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+		result, err := svc.AdminGeneratedTasks(user, service.AdminGeneratedContentQuery{
+			UserID: c.Query("userId"), Keyword: c.Query("keyword"), Status: c.Query("status"),
+			Kind: c.Query("kind"), Page: page, Limit: limit,
+		})
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, result)
+	})
+	r.GET("/admin/generated-content/tasks/:id", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		result, err := svc.AdminGeneratedTask(user, c.Param("id"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"task": result})
+	})
+	r.GET("/admin/generated-content/resources", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+		result, err := svc.AdminGeneratedResources(user, service.AdminGeneratedContentQuery{
+			UserID: c.Query("userId"), Keyword: c.Query("keyword"), Status: c.Query("status"),
+			Kind: c.Query("kind"), SourceSystem: c.Query("sourceSystem"), Page: page, Limit: limit,
+		})
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, result)
+	})
+	r.GET("/admin/generated-content/resources/:id/file", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		delivery, err := svc.PrepareAdminGeneratedResourceDelivery(user, c.Param("id"), c.GetHeader("Range"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if delivery.RedirectURL != "" {
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Referrer-Policy", "no-referrer")
+			c.Header("X-Content-Type-Options", "nosniff")
+			c.Redirect(http.StatusTemporaryRedirect, delivery.RedirectURL)
+			return
+		}
+		stream := delivery.Stream
+		defer stream.Body.Close()
+		resource := stream.Resource
+		mimeType := resource.MimeType
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		c.Header("Cache-Control", "private, no-cache")
+		c.Header("Accept-Ranges", "bytes")
+		c.Header("X-Content-Type-Options", "nosniff")
+		if c.Query("download") == "1" {
+			extension := filepath.Ext(resource.ObjectKey)
+			if len(extension) > 12 {
+				extension = ""
+			}
+			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=user-content%s", extension))
+		}
+		if resource.Provider == "local" {
+			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
+				c.Header("Content-Type", mimeType)
+				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
+				return
+			}
+		}
+		if stream.ContentRange != "" {
+			c.Header("Content-Range", stream.ContentRange)
+		}
+		if stream.AcceptRanges != "" {
+			c.Header("Accept-Ranges", stream.AcceptRanges)
+		}
+		c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)
 	})
 	r.GET("/admin/api-logs", func(c *gin.Context) {
 		user, err := currentUser(c, svc)

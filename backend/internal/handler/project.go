@@ -12,6 +12,44 @@ import (
 
 func RegisterProjectRoutes(r *gin.RouterGroup, svc *service.Service) {
 	RegisterStyleProfileRoutes(r, svc)
+	r.POST("/director/proposals", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 256<<10)
+		var req service.CreateDirectorPromptProposalRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		proposal, err := svc.CreateDirectorPromptProposal(user.ID, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"proposal": proposal})
+	})
+	r.POST("/director/proposals/:id/select", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+		var req service.SelectDirectorPromptProposalRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		proposal, err := svc.SelectDirectorPromptProposal(user.ID, c.Param("id"), req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"proposal": proposal})
+	})
 	r.GET("/voice-profiles", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

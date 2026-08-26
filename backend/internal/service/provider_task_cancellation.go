@@ -191,7 +191,7 @@ func (s *Service) providerCancellationInput(task *model.Task) (canvasGenerationI
 }
 
 func supportsProviderCancellation(interfaceType string) bool {
-	return interfaceType == string(model.ChannelInterfaceGeminiVeo) || interfaceType == string(model.ChannelInterfaceVolcengineArkVideo)
+	return interfaceType == string(model.ChannelInterfaceGeminiVeo) || interfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || interfaceType == string(model.ChannelInterfaceComfyUIWorkflow)
 }
 
 func cancelProviderTask(ctx context.Context, config providerConfig, providerRequestID string) error {
@@ -202,6 +202,8 @@ func cancelProviderTask(ctx context.Context, config providerConfig, providerRequ
 	case string(model.ChannelInterfaceVolcengineArkVideo):
 		path := "/contents/generations/tasks/" + url.PathEscape(providerRequestID)
 		return deleteProviderTask(ctx, config, path)
+	case string(model.ChannelInterfaceComfyUIWorkflow):
+		return postJSON(ctx, config, "/jobs/"+url.PathEscape(providerRequestID)+"/cancel", map[string]any{}, &map[string]any{})
 	default:
 		return errors.New("当前上游协议不支持取消")
 	}
@@ -265,6 +267,22 @@ func queryProviderCancellation(ctx context.Context, config providerConfig, provi
 			return providerCancellationPending, status, nil
 		default:
 			return providerCancellationPending, firstNonEmpty(status, "unknown"), nil
+		}
+	case string(model.ChannelInterfaceComfyUIWorkflow):
+		var state map[string]any
+		if err := getJSON(ctx, config, "/jobs/"+url.PathEscape(providerRequestID), &state); err != nil {
+			return "", "", err
+		}
+		status := strings.ToLower(strings.TrimSpace(stringField(state, "status")))
+		switch status {
+		case "cancelled", "canceled":
+			return providerCancellationConfirmed, status, nil
+		case "succeeded":
+			return providerCancellationSucceeded, status, nil
+		case "failed":
+			return providerCancellationFailed, status, nil
+		default:
+			return providerCancellationPending, firstNonEmpty(status, "running"), nil
 		}
 	default:
 		return "", "", errors.New("当前上游协议不支持取消状态查询")

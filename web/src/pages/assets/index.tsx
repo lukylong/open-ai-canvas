@@ -1,7 +1,7 @@
-import { AudioLines, Box, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FolderOpen, Image as ImageIcon, Link2, MoreHorizontal, PencilLine, Play, Plus, Search, Trash2, Upload, type LucideIcon } from "lucide-react";
+import { AudioLines, Box, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FolderOpen, Image as ImageIcon, Layers3, Link2, MoreHorizontal, PencilLine, Play, Plus, Search, Share2, Trash2, Upload, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { App, Button, Drawer, Dropdown, Form, Input, Modal, Select, Space, Tag, Typography } from "antd";
+import { App, Button, Drawer, Dropdown, Form, Input, Modal, Segmented, Select, Space, Table, Tag, Typography } from "antd";
 import type { MenuProps } from "antd";
 import { useNavigate } from "react-router";
 
@@ -13,6 +13,7 @@ import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
+import { groupAssetSeries, type AssetSeries } from "@/lib/asset-series";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
@@ -20,6 +21,7 @@ import { useAssetStore, type Asset, type AssetCategory, type AssetKind, type Ima
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetStorageUsage, assetStorageUsageQueryKey } from "./asset-storage-usage";
 import { deleteAssetWithRemoteSync } from "@/services/user-data-sync";
+import { cancelPublication, listPublications, publishAsset, publishAssets, retryPublication, type DistributionPublication } from "@/services/api/distribution";
 
 
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
@@ -89,7 +91,13 @@ export default function AssetsPage() {
     const [previewAsset, setPreviewAsset] = useState<LibraryAsset | null>(null);
     const [deletingAsset, setDeletingAsset] = useState<LibraryAsset | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [viewMode, setViewMode] = useState<"series" | "assets">("series");
+    const [activeSeriesKey, setActiveSeriesKey] = useState<string | null>(null);
     const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+    const [batchPublishLoading, setBatchPublishLoading] = useState(false);
+    const [publicationOpen, setPublicationOpen] = useState(false);
+    const [publicationLoading, setPublicationLoading] = useState(false);
+    const [publications, setPublications] = useState<DistributionPublication[]>([]);
 
     const [formKind, setFormKind] = useState<AssetKind>("text");
     const [imageDraft, setImageDraft] = useState<ImageDraft>(null);
@@ -101,7 +109,7 @@ export default function AssetsPage() {
     const selectedAssets = useMemo(() => validAssets.filter((asset) => selectedIds.includes(asset.id)), [selectedIds, validAssets]);
     const kindCounts = useMemo(() => new Map(kindOptions.map((option) => [option.value, option.value === "all" ? validAssets.length : validAssets.filter((asset) => asset.kind === option.value).length])), [validAssets]);
     const categoryCounts = useMemo(() => new Map(categoryOptions.map((option) => [option.value, option.value === "all" ? validAssets.length : validAssets.filter((asset) => (asset.category || "other") === option.value).length])), [validAssets]);
-    const canCreateAsset = !keyword.trim() && kindFilter === "all" && categoryFilter === "all";
+    const canCreateAsset = viewMode === "assets" && !keyword.trim() && kindFilter === "all" && categoryFilter === "all";
 
     const filteredAssets = useMemo(() => {
         const query = keyword.trim().toLowerCase();
@@ -114,16 +122,26 @@ export default function AssetsPage() {
     }, [validAssets, keyword, kindFilter, categoryFilter]);
     const filteredAssetIds = useMemo(() => filteredAssets.map((asset) => asset.id), [filteredAssets]);
     const allFilteredSelected = filteredAssetIds.length > 0 && filteredAssetIds.every((id) => selectedIds.includes(id));
+    const allSeries = useMemo(() => groupAssetSeries(validAssets), [validAssets]);
+    const filteredSeries = useMemo(() => groupAssetSeries(filteredAssets), [filteredAssets]);
+    const activeSeries = useMemo(() => allSeries.find((series) => series.key === activeSeriesKey) || null, [activeSeriesKey, allSeries]);
 
     const visibleAssets = useMemo(() => {
         const start = (page - 1) * pageSize;
         return filteredAssets.slice(start, start + pageSize);
     }, [filteredAssets, page, pageSize]);
 
+    const visibleSeries = useMemo(() => {
+        const start = (page - 1) * pageSize;
+        return filteredSeries.slice(start, start + pageSize);
+    }, [filteredSeries, page, pageSize]);
+
+    const resultCount = viewMode === "series" ? filteredSeries.length : filteredAssets.length;
+
     useEffect(() => {
-        const maxPage = Math.max(1, Math.ceil(filteredAssets.length / pageSize));
+        const maxPage = Math.max(1, Math.ceil(resultCount / pageSize));
         setPage((value) => Math.min(value, maxPage));
-    }, [filteredAssets.length, pageSize]);
+    }, [pageSize, resultCount]);
 
     useEffect(() => {
         const existingIds = new Set(validAssets.map((asset) => asset.id));
@@ -221,6 +239,80 @@ export default function AssetsPage() {
         saveAs(url, `${asset.title || "asset"}.${extension}`);
     };
 
+    const distributeAsset = async (asset: LibraryAsset) => {
+        try {
+            await publishAsset(asset.id, { assetVersionId: asset.primaryVersionId, metadata: { canvasCategory: asset.category || "other" } });
+            message.success("已创建分发记录，后台正在发布到素材分发平台");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "创建分发记录失败");
+        }
+    };
+
+    const distributeAssetBatch = async (items: LibraryAsset[], series?: Pick<AssetSeries<LibraryAsset>, "seriesId" | "seriesType" | "title">) => {
+        const distributable = Array.from(new Map(items.filter((asset) => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio").map((asset) => [asset.id, asset])).values());
+        if (!distributable.length) {
+            message.warning("请选择已保存的图片、视频或音频素材");
+            return;
+        }
+        setBatchPublishLoading(true);
+        let acceptedCount = 0;
+        let failedCount = 0;
+        try {
+            for (let start = 0; start < distributable.length; start += 1000) {
+                const chunk = distributable.slice(start, start + 1000);
+                const result = await publishAssets(chunk.map((asset) => asset.id), {
+                    metadata: {
+                        canvas_category: "series",
+                        ...(series ? {
+                            series_id: series.seriesId,
+                            series_type: series.seriesType,
+                            series_label: series.title,
+                            ...(series.seriesType === "batch" ? { batch_id: series.seriesId } : {}),
+                            ...(series.seriesType === "task" ? { generation_task_id: series.seriesId } : {}),
+                        } : {}),
+                    },
+                });
+                acceptedCount += result.acceptedCount;
+                failedCount += result.failedCount;
+            }
+            if (failedCount > 0) message.warning(`已排队 ${acceptedCount} 个，${failedCount} 个素材未能创建分发任务`);
+            else message.success(`已将 ${acceptedCount} 个素材加入分发队列`);
+            await loadPublications();
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "批量创建分发记录失败");
+        } finally {
+            setBatchPublishLoading(false);
+        }
+    };
+
+    const loadPublications = async () => {
+        setPublicationLoading(true);
+        try {
+            const result = await listPublications();
+            setPublications(result.publications);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "读取分发记录失败");
+        } finally {
+            setPublicationLoading(false);
+        }
+    };
+
+    const openPublications = () => {
+        setPublicationOpen(true);
+        void loadPublications();
+    };
+
+    const actOnPublication = async (publication: DistributionPublication, action: "retry" | "cancel") => {
+        try {
+            if (action === "retry") await retryPublication(publication.id);
+            else await cancelPublication(publication.id);
+            await loadPublications();
+            message.success(action === "retry" ? "分发任务已重新排队" : "待分发任务已取消");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "更新分发任务失败");
+        }
+    };
+
     const exportAllAssets = async () => {
         if (!validAssets.length) {
             message.warning("暂无素材可导出");
@@ -284,12 +376,13 @@ export default function AssetsPage() {
                 <PageHeader
                     title="素材库"
                     description="管理文本、图片、视频、音频和 3D 模型素材。"
-                    meta={<span className="app-projects-header-meta assets-header-meta">{validAssets.length} 个素材</span>}
+                    meta={<span className="app-projects-header-meta assets-header-meta">{allSeries.length} 个系列 · {validAssets.length} 个素材</span>}
                     actions={(
                         <div className="assets-header-actions">
                             <div className="assets-header-action-buttons">
                                 <Button className="library-primary-action" type="primary" icon={<Plus className="size-3.5" />} onClick={openCreate}>新增素材</Button>
                                 <Button icon={<FolderOpen className="size-3.5" />} onClick={() => navigate("/plugins/eagle")}>Eagle 素材库</Button>
+                                <Button icon={<Share2 className="size-3.5" />} onClick={openPublications}>分发记录</Button>
                                 <Button title="导出全部素材" aria-label="导出全部素材" icon={<Download className="size-4" />} onClick={() => void exportAllAssets()} />
                                 <Dropdown trigger={["click"]} menu={{ items: [{ key: "package", icon: <FileUp className="size-4" />, label: "导入素材包", onClick: () => assetInputRef.current?.click() }, { key: "model", icon: <Upload className="size-4" />, label: "上传 3D 模型", onClick: () => modelInputRef.current?.click() }] }}>
                                     <Button title="导入素材" aria-label="导入素材" icon={<FileUp className="size-4" />} />
@@ -301,6 +394,11 @@ export default function AssetsPage() {
                 />
                 <ListToolbar className="library-toolbar" active={Boolean(keyword || kindFilter !== "all" || categoryFilter !== "all")} onReset={() => { setKeyword(""); setKindFilter("all"); setCategoryFilter("all"); setPage(1); }}>
                     <Input allowClear className="w-full sm:w-80" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索标题、内容、标签或来源" onChange={(event) => { setPage(1); setKeyword(event.target.value); }} />
+                    <Segmented
+                        value={viewMode}
+                        options={[{ label: "系列", value: "series", icon: <Layers3 className="size-3.5" /> }, { label: "素材", value: "assets", icon: <ImageIcon className="size-3.5" /> }]}
+                        onChange={(value) => { setViewMode(value as "series" | "assets"); setPage(1); }}
+                    />
                 </ListToolbar>
             </div>
 
@@ -312,13 +410,13 @@ export default function AssetsPage() {
                     </aside>
                     <section className="min-w-0">
                         {selectedAssets.length ? (
-                            <AssetsBatchBar count={selectedAssets.length} allSelected={allFilteredSelected} onSelectAll={() => setSelectedIds((current) => Array.from(new Set([...current, ...filteredAssetIds])))} onClear={() => setSelectedIds([])} onExport={() => void exportSelectedAssets()} onDelete={() => setBatchDeleteOpen(true)} />
+                            <AssetsBatchBar count={selectedAssets.length} allSelected={allFilteredSelected} publishing={batchPublishLoading} onSelectAll={() => setSelectedIds((current) => Array.from(new Set([...current, ...filteredAssetIds])))} onClear={() => setSelectedIds([])} onPublish={() => void distributeAssetBatch(selectedAssets)} onExport={() => void exportSelectedAssets()} onDelete={() => setBatchDeleteOpen(true)} />
                         ) : null}
                         {validAssets.length === 0 ? (
                             <AssetsEmptyState onNew={openCreate} onImport={() => assetInputRef.current?.click()} onGoCanvas={() => navigate("/canvas")} />
                         ) : (
                             <>
-                                {filteredAssets.length === 0 ? (
+                                {resultCount === 0 ? (
                                     <WorkspaceState icon="assets" compact title="没有匹配的素材" description="调整关键词或左侧分类后再试。" />
                                 ) : (
                                     <CollectionGrid className="library-grid assets-library-grid">
@@ -327,12 +425,22 @@ export default function AssetsPage() {
                                             <span className="library-create-title">新增素材</span>
                                             <span className="library-create-meta">文本、图片、音视频或模型</span>
                                         </button> : null}
-                                        {visibleAssets.map((asset) => (
-                                            <AssetCard key={asset.id} asset={asset} selected={selectedIds.includes(asset.id)} onSelect={(selected) => setSelectedIds((current) => selected ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDelete={() => setDeletingAsset(asset)} />
+                                        {viewMode === "series" ? visibleSeries.map((series) => (
+                                            <AssetSeriesCard
+                                                key={series.key}
+                                                series={series}
+                                                selectedIds={selectedIds}
+                                                onSelect={(selected) => setSelectedIds((current) => selected ? Array.from(new Set([...current, ...series.assets.map((asset) => asset.id)])) : current.filter((id) => !series.assets.some((asset) => asset.id === id)))}
+                                                onOpen={() => setActiveSeriesKey(series.key)}
+                                                onPublish={() => void distributeAssetBatch(series.assets, series)}
+                                                onExport={() => void exportAssets(series.assets)}
+                                            />
+                                        )) : visibleAssets.map((asset) => (
+                                            <AssetCard key={asset.id} asset={asset} selected={selectedIds.includes(asset.id)} onSelect={(selected) => setSelectedIds((current) => selected ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDistribute={distributeAsset} onDelete={() => setDeletingAsset(asset)} />
                                         ))}
                                     </CollectionGrid>
                                 )}
-                                <PaginationBar current={page} pageSize={pageSize} total={filteredAssets.length} pageSizeOptions={[20, 40, 80]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />
+                                <PaginationBar current={page} pageSize={pageSize} total={resultCount} pageSizeOptions={[20, 40, 80]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />
                             </>
                         )}
                     </section>
@@ -451,6 +559,69 @@ export default function AssetsPage() {
 
             <AssetDrawer asset={previewAsset} onClose={() => setPreviewAsset(null)} onCopy={copyAssetText} onDownload={downloadImage} />
 
+            <Drawer
+                title={activeSeries ? `素材系列 · ${activeSeries.title}` : "素材系列"}
+                width={860}
+                open={Boolean(activeSeries)}
+                onClose={() => setActiveSeriesKey(null)}
+                extra={activeSeries ? (
+                    <Space>
+                        <Button icon={<Download className="size-3.5" />} onClick={() => void exportAssets(activeSeries.assets)}>导出系列</Button>
+                        <Button type="primary" loading={batchPublishLoading} icon={<Share2 className="size-3.5" />} onClick={() => void distributeAssetBatch(activeSeries.assets, activeSeries)}>分发系列</Button>
+                    </Space>
+                ) : null}
+            >
+                {activeSeries ? (
+                    <>
+                        <div className="mb-4 flex flex-wrap gap-2">
+                            <Tag>{activeSeries.seriesType === "batch" ? "批量任务" : activeSeries.seriesType === "task" ? "生成任务" : "单素材"}</Tag>
+                            <Tag>{activeSeries.assetCount} 个素材</Tag>
+                            <Typography.Text type="secondary" copyable={{ text: activeSeries.seriesId }}>{activeSeries.seriesId}</Typography.Text>
+                        </div>
+                        <Table<LibraryAsset>
+                            rowKey="id"
+                            size="small"
+                            dataSource={activeSeries.assets}
+                            pagination={{ pageSize: 50 }}
+                            rowSelection={{
+                                selectedRowKeys: activeSeries.assets.filter((asset) => selectedIds.includes(asset.id)).map((asset) => asset.id),
+                                onChange: (keys) => {
+                                    const seriesIDs = new Set(activeSeries.assets.map((asset) => asset.id));
+                                    setSelectedIds((current) => [...current.filter((id) => !seriesIDs.has(id)), ...keys.map(String)]);
+                                },
+                            }}
+                            onRow={(asset) => ({ onDoubleClick: () => setPreviewAsset(asset) })}
+                            columns={[
+                                { title: "序号", width: 70, render: (_, __, index) => index + 1 },
+                                { title: "素材", render: (_, asset) => asset.title },
+                                { title: "类型", width: 90, render: (_, asset) => assetKindLabel(asset.kind) },
+                                { title: "状态", width: 90, render: (_, asset) => asset.status || "confirmed" },
+                                { title: "更新时间", width: 180, render: (_, asset) => formatAssetDateTime(asset.updatedAt) },
+                                { title: "操作", width: 80, render: (_, asset) => <Button type="link" size="small" onClick={() => setPreviewAsset(asset)}>查看</Button> },
+                            ]}
+                        />
+                    </>
+                ) : null}
+            </Drawer>
+
+            <Drawer title="素材分发记录" width={760} open={publicationOpen} onClose={() => setPublicationOpen(false)} extra={<Button onClick={() => void loadPublications()}>刷新</Button>}>
+                <p className="mb-4 text-xs text-foreground/45">单素材、所选素材和完整系列都可手动进入队列；发布成功只代表目标平台已确认写入。</p>
+                <Table<DistributionPublication>
+                    rowKey="id"
+                    size="small"
+                    loading={publicationLoading}
+                    dataSource={publications}
+                    pagination={{ pageSize: 20 }}
+                    columns={[
+                        { title: "素材", render: (_, item) => validAssets.find((asset) => asset.id === item.assetId)?.title || item.assetId },
+                        { title: "状态", width: 100, render: (_, item) => <DistributionStatus status={item.status} /> },
+                        { title: "时间", width: 170, render: (_, item) => new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false }) },
+                        { title: "结果", render: (_, item) => item.lastError || item.externalId || "--" },
+                        { title: "操作", width: 130, render: (_, item) => <Space size={4}>{item.status === "failed" ? <Button type="link" size="small" onClick={() => void actOnPublication(item, "retry")}>重试</Button> : null}{item.status === "pending" ? <Button danger type="link" size="small" onClick={() => void actOnPublication(item, "cancel")}>取消</Button> : null}</Space> },
+                    ]}
+                />
+            </Drawer>
+
             <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
             <input ref={modelInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" className="hidden" onChange={(event) => { void readModelFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
 
@@ -464,12 +635,42 @@ export default function AssetsPage() {
     );
 }
 
-function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownload, onDelete }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; onEdit: () => void; onCopy: (asset: LibraryAsset) => void; onDownload: (asset: LibraryAsset) => void; onDelete: () => void }) {
+function AssetSeriesCard({ series, selectedIds, onSelect, onOpen, onPublish, onExport }: { series: AssetSeries<LibraryAsset>; selectedIds: string[]; onSelect: (selected: boolean) => void; onOpen: () => void; onPublish: () => void; onExport: () => void }) {
+    const cover = series.assets[0];
+    const allSelected = series.assets.every((asset) => selectedIds.includes(asset.id));
+    const distributableCount = series.assets.filter((asset) => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio").length;
+    const menuItems: MenuProps["items"] = [
+        { key: "open", icon: <Layers3 className="size-3.5" />, label: "查看系列", onClick: onOpen },
+        { key: "select", icon: <CheckCheck className="size-3.5" />, label: allSelected ? "取消选择系列" : "选择整个系列", onClick: () => onSelect(!allSelected) },
+        { key: "export", icon: <Download className="size-3.5" />, label: "导出整个系列", onClick: onExport },
+        { key: "distribute", icon: <Share2 className="size-3.5" />, label: "分发整个系列", disabled: distributableCount === 0, onClick: onPublish },
+    ];
+    return (
+        <AssetLibraryCard selected={allSelected}>
+            <AssetCover asset={cover} selected={allSelected} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} />
+            <button type="button" className="block w-full px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--workspace-accent)]" onClick={onOpen}>
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                    <h2 className="truncate text-[var(--fs-body)] font-semibold text-foreground" title={series.title}>{series.title}</h2>
+                    <span className="shrink-0 text-[var(--fs-tiny)] tabular-nums text-foreground/38">{formatAssetTime(series.updatedAt)}</span>
+                </div>
+                <div className="mt-1 truncate text-[var(--fs-label)] text-foreground/52">{series.assetCount} 个素材 · {series.kind === "mixed" ? "混合类型" : assetKindLabel(series.kind)}</div>
+                <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[var(--fs-tiny)] text-foreground/38">
+                    <span>{series.seriesType === "batch" ? "批量任务" : series.seriesType === "task" ? "生成任务" : "单素材"}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="truncate">{series.seriesId}</span>
+                </div>
+            </button>
+        </AssetLibraryCard>
+    );
+}
+
+function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownload, onDistribute, onDelete }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; onEdit: () => void; onCopy: (asset: LibraryAsset) => void; onDownload: (asset: LibraryAsset) => void; onDistribute: (asset: LibraryAsset) => Promise<void>; onDelete: () => void }) {
     const summary = assetSummary(asset);
     const menuItems: MenuProps["items"] = [
         ...(asset.kind === "text" || asset.kind === "image" ? [{ key: "edit", icon: <PencilLine className="size-3.5" />, label: "编辑", onClick: onEdit }] : []),
         ...(asset.kind === "text" ? [{ key: "copy", icon: <Copy className="size-3.5" />, label: "复制文本", onClick: () => void onCopy(asset) }] : []),
         ...(asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "model" ? [{ key: "download", icon: <Download className="size-3.5" />, label: "下载", onClick: () => onDownload(asset) }] : []),
+        ...(asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" ? [{ key: "distribute", icon: <Share2 className="size-3.5" />, label: "发布到素材分发平台", onClick: () => void onDistribute(asset) }] : []),
         { type: "divider" as const },
         { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: onDelete },
     ];
@@ -490,6 +691,17 @@ function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownlo
             </button>
         </AssetLibraryCard>
     );
+}
+
+function DistributionStatus({ status }: { status: DistributionPublication["status"] }) {
+    const values: Record<DistributionPublication["status"], { color?: string; label: string }> = {
+        pending: { color: "processing", label: "待分发" },
+        published: { color: "success", label: "已发布" },
+        failed: { color: "error", label: "失败" },
+        cancelled: { label: "已取消" },
+    };
+    const value = values[status];
+    return <Tag color={value.color}>{value.label}</Tag>;
 }
 
 function AssetCover({ asset, selected, onSelect, onOpen, menuItems }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"] }) {
@@ -557,13 +769,14 @@ function ModelCover({ asset }: { asset: LibraryAsset & { kind: "model" } }) {
     );
 }
 
-function AssetsBatchBar({ count, allSelected, onSelectAll, onClear, onExport, onDelete }: { count: number; allSelected: boolean; onSelectAll: () => void; onClear: () => void; onExport: () => void; onDelete: () => void }) {
+function AssetsBatchBar({ count, allSelected, publishing, onSelectAll, onClear, onPublish, onExport, onDelete }: { count: number; allSelected: boolean; publishing: boolean; onSelectAll: () => void; onClear: () => void; onPublish: () => void; onExport: () => void; onDelete: () => void }) {
     return (
         <div className="assets-batch-bar" role="toolbar" aria-label="批量操作">
             <span className="assets-batch-count">已选择 <strong>{count}</strong> 个素材</span>
             <div className="assets-batch-actions">
                 <Button size="small" icon={<CheckCheck className="size-3.5" />} disabled={allSelected} onClick={onSelectAll}>全选</Button>
                 <Button size="small" onClick={onClear}>取消选择</Button>
+                <Button size="small" type="primary" loading={publishing} icon={<Share2 className="size-3.5" />} onClick={onPublish}>分发</Button>
                 <Button size="small" icon={<Download className="size-3.5" />} onClick={onExport}>导出</Button>
                 <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>删除</Button>
             </div>

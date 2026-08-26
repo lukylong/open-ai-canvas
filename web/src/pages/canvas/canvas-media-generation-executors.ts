@@ -170,7 +170,7 @@ export async function executeAudioGeneration({
                 prompt: effectivePrompt,
                 config: generationConfig,
                 signal: controller.signal,
-                metadata: { sourceNodeId: nodeId, ...taskContext, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, resolvedCharacterVoiceKey: generationContext.resolvedCharacterVoices[0]?.voiceKey },
+                metadata: { sourceNodeId: nodeId, ...taskContext, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, resolvedCharacterVoiceKey: generationContext.resolvedCharacterVoices[0]?.voiceKey, resolvedCharacterVoice: generationContext.resolvedCharacterVoices[0] },
             },
             {
                 bindTask: (task) => bindGenerationTask(audioId, task),

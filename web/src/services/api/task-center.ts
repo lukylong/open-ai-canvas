@@ -27,6 +27,9 @@ export type GenerationTaskOutput = {
 
 export type GenerationTask = {
     id: string;
+	batchId?: string;
+	batchItemId?: string;
+	batchIndex?: number;
     clientOperationId?: string;
     retryOf?: string;
     attemptGroupId?: string;
@@ -159,6 +162,7 @@ export type AgentSessionDetail = {
 };
 
 export type CreateSessionInput = {
+	directorProposalId: string;
     projectId?: string;
     prompt: string;
     canvasSnapshot?: Record<string, unknown>;

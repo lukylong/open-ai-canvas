@@ -209,7 +209,6 @@ func (s *Service) CompleteLinuxDOLogin(stateValue string, code string) (*LinuxDO
 		return nil, errors.New("Linux.do 用户信息缺少稳定用户 ID")
 	}
 	providerUsername := profileString(profile, setting.UsernameField)
-	displayName := firstNonEmpty(profileString(profile, setting.DisplayNameField), providerUsername, "Linux.do 用户")
 	avatarURL := profileString(profile, setting.AvatarField)
 	identity, err := s.repo.UserIdentity("linuxdo", subject)
 	var user *model.User
@@ -225,20 +224,7 @@ func (s *Service) CompleteLinuxDOLogin(stateValue string, code string) (*LinuxDO
 			return nil, err
 		}
 	} else if errors.Is(err, gorm.ErrRecordNotFound) {
-		registrationEnabled, settingErr := s.RegistrationEnabled()
-		if settingErr != nil {
-			return nil, settingErr
-		}
-		if !registrationEnabled {
-			return nil, Forbidden("管理员未开放新用户注册")
-		}
-		user, identity, err = s.createLinuxDOUser(subject, providerUsername, displayName, profileString(profile, setting.EmailField), avatarURL)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.repo.CreateOAuthUser(user, identity); err != nil {
-			return nil, err
-		}
+		return nil, Forbidden("请先使用邀请码创建账号，再由管理员绑定第三方身份")
 	} else {
 		return nil, err
 	}
@@ -288,7 +274,7 @@ func (s *Service) createLinuxDOUser(subject string, providerUsername string, dis
 			return nil, nil, err
 		}
 	}
-	user := &model.User{ID: newID(), Username: username, Email: email, DisplayName: normalizeDisplayName(displayName, username), Role: model.UserRoleUser, Status: model.UserStatusActive}
+	user := &model.User{ID: newID(), Username: username, Email: email, DisplayName: normalizeDisplayName(displayName, username), AvatarURL: avatarURL, SourceSystem: "canvas", Role: model.UserRoleUser, Status: model.UserStatusActive}
 	identity := &model.UserIdentity{ID: newID(), UserID: user.ID, Provider: "linuxdo", Subject: subject, ProviderUsername: providerUsername, AvatarURL: avatarURL}
 	return user, identity, nil
 }

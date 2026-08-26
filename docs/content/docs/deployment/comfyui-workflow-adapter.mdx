@@ -1,0 +1,71 @@
+---
+title: ComfyUI 工作流适配器
+description: Docker 部署、多 GPU Provider、逻辑模型与计费配置
+---
+
+# ComfyUI 工作流适配器
+
+## 启动
+
+```bash
+export COMFY_ADAPTER_TOKEN="$(openssl rand -hex 32)"
+export COMFY_URL=http://host.docker.internal:8188
+docker compose -f docker-compose.yml -f docker-compose.comfy.yml up -d --build
+```
+
+多 GPU 使用 `COMFY_PROVIDERS_JSON`：
+
+```json
+[
+  {"id":"gpu-3","name":"GPU 3","base_url":"http://10.0.0.3:8188"},
+  {"id":"gpu-4","name":"GPU 4","base_url":"http://10.0.0.4:8188"}
+]
+```
+
+参考图 URL 默认只允许解析到公网地址且不跟随重定向。如素材位于可信内网对象存储，使用 `COMFY_INPUT_HOST_ALLOWLIST=精确主机名` 单独放行，不能填写通配符。
+
+后台创建系统渠道时：
+
+- Base URL：`http://comfy-adapter:8090/v1`
+- API Key：与 `COMFY_ADAPTER_TOKEN` 相同
+- 精确私网 host allowlist：`comfy-adapter`
+- 模型协议：`comfyui-workflow`
+- Provider 模型键：`comfy-adapter/workflows/manifest.json` 中的 workflow `key`
+
+## 版本和计费
+
+workflow JSON 与 manifest 一起提交 Git。adapter 返回 workflow 文件 SHA-256 的前 16 位作为 revision。每个 workflow 建一个 ChannelModel，再按分辨率、时长或输出数建立 price tier；逻辑模型路由到对应 ChannelModel。账务仍走影策现有 admission、预留和结算流程，不由 adapter 自行计费。
+
+## 切换前台工作流
+
+前台显示的是逻辑模型名称，真正提交给 adapter 的工作流由逻辑模型路由指向的 ChannelModel `model_key` 决定。修改工作流时同时完成以下三项：
+
+1. 在 `comfy-adapter/workflows/manifest.json` 注册 API 格式工作流；
+2. 将 ChannelModel 的 `model_key`、`provider_model_key` 和启用的 price tier `provider_model_key` 指向同一个 workflow key；
+3. 重建 adapter，并重启 backend 使路由缓存失效。
+
+当前 `Comfy 文生视频` 使用 `minimax_h3_hybrid_v0331_t2v`，`Comfy 图生视频` 使用 `minimax_h3_hybrid_v0331_i2v`。两个 key 共用 `minimax_h3_hybrid_8step_2pass_v0331_api.json`，即 `MiniMax+H3+全模态+I+混合模型+I+极速二采+I+官流加速1.0版+I+提示词强化-已修复-v0.33.1` 的已验证活动分支；两个 key 只区分是否强制要求参考图。
+
+### MiniMax H3 口播与声音
+
+- 关闭前台“生成声音”后，adapter 会从保存节点移除音频输入，输出确定性的无声 MP4，不再保留 H3 随机生成的语音。
+- 开启“生成声音”但提示词没有明确口播、台词或旁白时，adapter 会追加“禁止人物说话、禁止虚构语言”的 H3 音频约束，只保留环境声和动作声。
+- 精确中文口播使用 `人物口播：“原文”`；adapter 会转换为 H3 的 `<d>[Chinese] 原文</d>`，禁止翻译、改写、重复或新增音节。
+- 中文口播按每秒最多约 5 个汉字校验；文案过长时延长视频或拆成多个镜头。长口播或必须逐字稳定交付的场景，应使用独立 TTS 配音后再混音，不依赖生成模型即兴发音。
+
+## 任务协议
+
+影策创建 `/v1/jobs`，adapter 上传参考图、编译 workflow 并提交 `/prompt`；随后查询 `/history/{prompt_id}`。任务 ID 编码 provider 和 prompt ID，因此 backend 重启后仍可继续轮询。取消调用 ComfyUI `/interrupt` 和队列删除。输出通过 adapter 转发给影策，再进入现有 Resource/Asset 持久化。
+
+## 批量数量与并发
+
+- 单个创作批次默认最多包含 1000 个任务，在管理后台“资源与策略 → 任务与并发 → 单批生成任务”调整，允许范围为 1-1000。
+- “账号活动任务”限制同一账号同时处于排队或运行状态的任务数，批次中其余任务继续等待；不要为了支持 1000 个批次任务而把并发直接调到 1000。
+- ComfyUI `batch_size` 是一次 workflow 请求产生的图片数量，目前为 1-4；它与批次包含的任务总数是两个不同的限制。
+
+## 工作流约束
+
+- manifest 必须显式声明 prompt、seed、尺寸、时长、输入图和保存节点。
+- 需要参考图的 workflow 在缺图时立即失败。
+- 输入数量、尺寸、时长、batch 和 denoise 在 adapter 边界校验。
+- 新节点或自定义节点上线前，应在目标 GPU 上验证节点覆盖；共享模型文件不代表节点兼容。

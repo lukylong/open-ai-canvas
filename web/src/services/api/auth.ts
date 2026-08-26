@@ -46,6 +46,7 @@ export type AuthSessionPayload = {
 
 export type RuntimeLimits = {
     activeTaskLimit: number;
+    batchMaxCount: number;
     resourceUploadMB: number;
     sessionUploadMB: number;
 };
@@ -291,6 +292,7 @@ export type RuntimeTaskPolicy = {
     workerConcurrency: number;
     channelConcurrency: number;
     activeTaskLimit: number;
+    batchMaxCount: number;
     imageTimeoutMinutes: number;
     textTimeoutMinutes: number;
     audioTimeoutMinutes: number;
@@ -335,7 +337,7 @@ export type RuntimePolicySetting = {
 
 
 export function getAuthSettings() {
-    return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean }>(api.get("/auth/settings"));
+    return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean; invitationCodeRequired: boolean }>(api.get("/auth/settings"));
 }
 
 export function linuxDOLoginURL(next: string) {
@@ -385,8 +387,37 @@ export function sendRegistrationEmailCode(email: string) {
     return request<{ sent: boolean }>(api.post("/auth/email-code", { email }));
 }
 
-export function register(input: { username: string; email?: string; emailCode?: string; displayName?: string; password: string }) {
+export function register(input: { username: string; email?: string; invitationCode?: string; displayName?: string; password: string }) {
     return request<{ user: LocalUser }>(api.post("/auth/register", input));
+}
+
+export function changePassword(input: { currentPassword: string; newPassword: string }) {
+    return request<{ reauthenticationRequired: boolean }>(api.post("/auth/password", input));
+}
+
+export type InvitationCode = {
+    id: string;
+    codePreview: string;
+    label: string;
+    maxUses: number;
+    usedCount: number;
+    expiresAt?: string;
+    revokedAt?: string;
+    createdBy: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export function listAdminInvitationCodes() {
+    return request<{ invitationCodes: InvitationCode[] }>(api.get("/admin/invitation-codes"));
+}
+
+export function createAdminInvitationCode(input: { label?: string; maxUses: number; expiresAt?: string }) {
+    return request<{ invitationCode: InvitationCode & { code: string } }>(api.post("/admin/invitation-codes", input));
+}
+
+export function revokeAdminInvitationCode(id: string) {
+    return request<{ invitationCode: InvitationCode }>(api.post(`/admin/invitation-codes/${encodeURIComponent(id)}/revoke`));
 }
 
 export async function logout() {

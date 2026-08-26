@@ -27,6 +27,8 @@ const ResponseInterceptionSettingsPage = lazy(() => import("@/pages/admin/settin
 const ThirdPartySettingsPage = lazy(() => import("@/pages/admin/settings/libtv-settings-page"));
 const StoryboardPromptsPage = lazy(() => import("@/pages/admin/storyboard-prompts/storyboard-prompts-page"));
 const UsersPage = lazy(() => import("@/pages/admin/users/users-page"));
+const InvitationCodesPage = lazy(() => import("@/pages/admin/invitation-codes/invitation-codes-page"));
+const GeneratedContentPage = lazy(() => import("@/pages/admin/content/generated-content-page"));
 const AssetsPage = lazy(loadAssetsPage);
 const LoginPage = lazy(() => import("@/pages/auth/login"));
 const RegisterPage = lazy(() => import("@/pages/auth/register"));
@@ -141,6 +143,8 @@ export const router = createBrowserRouter([
                 children: [
                     { index: true, element: deferred(<AnalyticsPage />) },
                     { path: "users", element: deferred(<UsersPage />) },
+                    { path: "invitation-codes", element: deferred(<InvitationCodesPage />) },
+                    { path: "generated-content", element: deferred(<GeneratedContentPage />) },
                     { path: "channels", element: deferred(<ChannelsPage />) },
                     { path: "models", element: deferred(<LogicalModelsPage />) },
                     { path: "prompt-templates", element: deferred(<StoryboardPromptsPage />) },

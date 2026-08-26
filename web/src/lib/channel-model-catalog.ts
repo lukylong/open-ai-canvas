@@ -1,5 +1,5 @@
 import { defaultModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
-import { modelProtocolCapability, protocolForModelCatalog, type ModelProtocol } from "@/lib/model-protocols";
+import { MODEL_PROTOCOLS, modelProtocolCapability, protocolForModelCatalog, type ModelProtocol } from "@/lib/model-protocols";
 import type { ModelChannel } from "@/stores/use-config-store";
 
 export type ChannelModelCatalogOption = { value: string; label?: string };
@@ -107,7 +107,7 @@ export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Ch
 
 function protocolTemplateForNewCatalogModel(capability: ChannelModelCost["capability"] | undefined, channelProtocol: ModelProtocol | undefined): ModelProtocol | undefined {
     if (!capability) return channelProtocol;
-    if (modelProtocolCapability(channelProtocol) === capability) return channelProtocol;
+    if (MODEL_PROTOCOLS.some((item) => item.value === channelProtocol && item.capability === capability)) return channelProtocol;
     const templates: Record<ChannelModelCost["capability"], ModelProtocol> = { text: "chat-completion", image: "openai-image", video: "newapi", audio: "openai-audio" };
     return templates[capability];
 }

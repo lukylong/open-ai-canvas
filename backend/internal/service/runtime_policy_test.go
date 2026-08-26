@@ -91,8 +91,50 @@ func TestRuntimePolicyDefaultsAndSelfUseModeValidate(t *testing.T) {
 	if err := validateRuntimePolicy(selfUse); err != nil {
 		t.Fatalf("self-use runtime policy error = %v", err)
 	}
-	if selfUse.Task.WorkerConcurrency != 999 || selfUse.Resource.ResourceUploadMB != 999 {
-		t.Fatalf("self-use maxima = worker %d, upload %d", selfUse.Task.WorkerConcurrency, selfUse.Resource.ResourceUploadMB)
+	if selfUse.Task.WorkerConcurrency != 999 || selfUse.Task.BatchMaxCount != 1_000 || selfUse.Resource.ResourceUploadMB != 999 {
+		t.Fatalf("self-use maxima = worker %d, batch %d, upload %d", selfUse.Task.WorkerConcurrency, selfUse.Task.BatchMaxCount, selfUse.Resource.ResourceUploadMB)
+	}
+}
+
+func TestRuntimePolicyBatchMaxCountValidation(t *testing.T) {
+	policy := defaultRuntimePolicy()
+	if policy.Task.BatchMaxCount != 1_000 {
+		t.Fatalf("default batch max count = %d, want 1000", policy.Task.BatchMaxCount)
+	}
+	policy.Task.BatchMaxCount = 1_001
+	if err := validateRuntimePolicy(policy); err == nil {
+		t.Fatal("batch max count above 1000 should be rejected")
+	}
+}
+
+func TestLegacyRuntimePolicyWithoutBatchMaxCountUsesDefault(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(defaultRuntimePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(encoded, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy["task"].(map[string]any), "batchMaxCount")
+	encoded, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.SystemSetting{Key: runtimePolicySettingKey, ValueJSON: string(encoded)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := New(repository.New(db), t.TempDir())
+	policy, err := svc.RuntimePolicy()
+	if err != nil || policy.Task.BatchMaxCount != 1_000 {
+		t.Fatalf("legacy batch max count = %d, error = %v", policy.Task.BatchMaxCount, err)
 	}
 }
 
@@ -121,18 +163,19 @@ func TestRuntimePolicySaveAndResetTakeEffectImmediately(t *testing.T) {
 	actor := &model.User{ID: "admin", Role: model.UserRoleAdmin}
 	policy := defaultRuntimePolicy()
 	policy.Task.ActiveTaskLimit = 17
+	policy.Task.BatchMaxCount = 800
 	if _, err := svc.UpdateRuntimePolicySetting(actor, policy); err != nil {
 		t.Fatal(err)
 	}
 	effective, err := svc.RuntimePolicy()
-	if err != nil || effective.Task.ActiveTaskLimit != 17 {
-		t.Fatalf("effective active task limit = %d, error = %v", effective.Task.ActiveTaskLimit, err)
+	if err != nil || effective.Task.ActiveTaskLimit != 17 || effective.Task.BatchMaxCount != 800 {
+		t.Fatalf("effective task limits = active %d, batch %d, error = %v", effective.Task.ActiveTaskLimit, effective.Task.BatchMaxCount, err)
 	}
 	if _, err := svc.ResetRuntimePolicySetting(actor); err != nil {
 		t.Fatal(err)
 	}
 	effective, err = svc.RuntimePolicy()
-	if err != nil || effective.Task.ActiveTaskLimit != 5 {
-		t.Fatalf("reset active task limit = %d, error = %v", effective.Task.ActiveTaskLimit, err)
+	if err != nil || effective.Task.ActiveTaskLimit != 5 || effective.Task.BatchMaxCount != 1_000 {
+		t.Fatalf("reset task limits = active %d, batch %d, error = %v", effective.Task.ActiveTaskLimit, effective.Task.BatchMaxCount, err)
 	}
 }

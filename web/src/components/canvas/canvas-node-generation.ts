@@ -24,7 +24,10 @@ export type ResolvedCharacterVoice = {
     versionId: string;
     characterName: string;
     voiceKey: string;
+    profileId: string;
+    provider: string;
     sampleResourceId?: string;
+    referenceText?: string;
     language?: string;
     voiceAge?: string;
     timbre?: string;
@@ -360,7 +363,10 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
             versionId: detail.character.versionId,
             characterName: detail.asset.title,
             voiceKey: stringField(voice.profile.voiceKey),
+            profileId: stringField(voice.profile.id),
+            provider: stringField(voice.profile.provider),
             sampleResourceId: sampleResourceId || undefined,
+            referenceText: stringField(voice.profile.referenceText) || undefined,
             language: language || undefined,
             voiceAge: voiceAge || undefined,
             timbre: timbre || undefined,

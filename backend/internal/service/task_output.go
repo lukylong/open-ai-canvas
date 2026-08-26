@@ -14,6 +14,9 @@ type TaskSummary struct {
 	ID                        string                     `json:"id"`
 	SessionID                 string                     `json:"sessionId,omitempty"`
 	ProjectID                 string                     `json:"projectId,omitempty"`
+	BatchID                   string                     `json:"batchId,omitempty"`
+	BatchItemID               *string                    `json:"batchItemId,omitempty"`
+	BatchIndex                int                        `json:"batchIndex,omitempty"`
 	Type                      string                     `json:"type"`
 	Status                    model.TaskStatus           `json:"status"`
 	Stage                     string                     `json:"stage"`
@@ -97,6 +100,9 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		ID:                        task.ID,
 		SessionID:                 task.SessionID,
 		ProjectID:                 task.ProjectID,
+		BatchID:                   task.BatchID,
+		BatchItemID:               task.BatchItemID,
+		BatchIndex:                task.BatchIndex,
 		Type:                      task.Type,
 		Status:                    task.Status,
 		Stage:                     task.Stage,

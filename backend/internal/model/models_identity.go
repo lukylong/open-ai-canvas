@@ -7,12 +7,36 @@ type User struct {
 	Username     string     `json:"username" gorm:"uniqueIndex;size:80"`
 	Email        string     `json:"email,omitempty" gorm:"size:160"`
 	DisplayName  string     `json:"displayName" gorm:"size:80"`
+	AvatarURL    string     `json:"avatarUrl,omitempty" gorm:"type:text"`
+	SourceSystem string     `json:"sourceSystem,omitempty" gorm:"index;size:32"`
 	Role         UserRole   `json:"role" gorm:"index;size:24"`
 	Status       UserStatus `json:"status" gorm:"index;size:24"`
 	PasswordHash string     `json:"-"`
 	LastLoginAt  *time.Time `json:"lastLoginAt"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	UpdatedAt    time.Time  `json:"updatedAt"`
+}
+
+// InvitationCode stores only a digest. The raw code is returned once at creation time.
+type InvitationCode struct {
+	ID          string     `json:"id" gorm:"primaryKey;size:36"`
+	CodeHash    string     `json:"-" gorm:"uniqueIndex;size:64"`
+	CodePreview string     `json:"codePreview" gorm:"size:24"`
+	Label       string     `json:"label" gorm:"size:120"`
+	MaxUses     int        `json:"maxUses"`
+	UsedCount   int        `json:"usedCount"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty" gorm:"index"`
+	RevokedAt   *time.Time `json:"revokedAt,omitempty" gorm:"index"`
+	CreatedBy   string     `json:"createdBy" gorm:"index;size:36"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
+type InvitationCodeUsage struct {
+	ID               string    `json:"id" gorm:"primaryKey;size:36"`
+	InvitationCodeID string    `json:"invitationCodeId" gorm:"index;size:36"`
+	UserID           string    `json:"userId" gorm:"uniqueIndex;size:36"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 type AuthSession struct {

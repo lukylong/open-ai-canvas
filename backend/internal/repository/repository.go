@@ -594,7 +594,7 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	query := r.db.Select("id", "session_id", "project_id", "type", "status", "stage", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at").
+	query := r.db.Select("id", "session_id", "project_id", "batch_id", "batch_item_id", "batch_index", "type", "status", "stage", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at").
 		Where("user_id = ?", userID)
 	if strings.TrimSpace(projectID) != "" {
 		query = query.Where("project_id = ?", strings.TrimSpace(projectID))
@@ -898,13 +898,13 @@ func (r *Repository) Resources(userID string, limit int) ([]model.Resource, erro
 
 func (r *Repository) Assets(userID string) ([]model.Asset, error) {
 	var assets []model.Asset
-	err := r.db.Order("updated_at desc").Find(&assets, "user_id = ?", userID).Error
+	err := r.db.Order("updated_at desc").Find(&assets, "user_id = ? AND status <> ?", userID, model.AssetVersionStatusArchived).Error
 	return assets, err
 }
 
 func (r *Repository) AssetSummaries(userID string) ([]model.Asset, error) {
 	var assets []model.Asset
-	err := r.db.Select("id", "kind", "category", "status", "primary_version_id", "title", "created_at", "updated_at").Order("updated_at desc").Find(&assets, "user_id = ?", userID).Error
+	err := r.db.Select("id", "kind", "category", "status", "primary_version_id", "title", "created_at", "updated_at").Order("updated_at desc").Find(&assets, "user_id = ? AND status <> ?", userID, model.AssetVersionStatusArchived).Error
 	return assets, err
 }
 

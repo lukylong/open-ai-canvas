@@ -53,6 +53,7 @@ type VoiceProfileSummary struct {
 	Language         string   `json:"language"`
 	Timbre           string   `json:"timbre"`
 	SampleResourceID string   `json:"sampleResourceId,omitempty"`
+	ReferenceText    string   `json:"referenceText,omitempty"`
 	CompatibleModels []string `json:"compatibleModels"`
 	Status           string   `json:"status"`
 }
@@ -506,7 +507,7 @@ func characterAssetPayload(assetID string, versionID string, name string, defini
 func voiceProfileSummary(profile model.VoiceProfile) VoiceProfileSummary {
 	compatible := []string{}
 	_ = json.Unmarshal([]byte(profile.CompatibleModelsJSON), &compatible)
-	return VoiceProfileSummary{ID: profile.ID, Name: profile.Name, Provider: profile.Provider, VoiceKey: profile.VoiceKey, Language: profile.Language, Timbre: profile.Timbre, SampleResourceID: profile.SampleResourceID, CompatibleModels: compatible, Status: profile.Status}
+	return VoiceProfileSummary{ID: profile.ID, Name: profile.Name, Provider: profile.Provider, VoiceKey: profile.VoiceKey, Language: profile.Language, Timbre: profile.Timbre, SampleResourceID: profile.SampleResourceID, ReferenceText: profile.ReferenceText, CompatibleModels: compatible, Status: profile.Status}
 }
 
 func validCharacterRepresentationRole(role string) bool {

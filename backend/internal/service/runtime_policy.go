@@ -21,6 +21,7 @@ const (
 	maxRuntimeCount          int64 = 999_999_999
 	maxRuntimeRate                 = 999_999
 	maxRuntimeConcurrency          = 999
+	maxRuntimeBatchCount           = 1_000
 	maxRuntimeTimeoutMinutes       = 9_999
 )
 
@@ -43,6 +44,7 @@ type RuntimeTaskPolicy struct {
 	WorkerConcurrency        int `json:"workerConcurrency"`
 	ChannelConcurrency       int `json:"channelConcurrency"`
 	ActiveTaskLimit          int `json:"activeTaskLimit"`
+	BatchMaxCount            int `json:"batchMaxCount"`
 	ImageTimeoutMinutes      int `json:"imageTimeoutMinutes"`
 	TextTimeoutMinutes       int `json:"textTimeoutMinutes"`
 	AudioTimeoutMinutes      int `json:"audioTimeoutMinutes"`
@@ -91,6 +93,7 @@ type PublicRuntimePolicySetting struct {
 
 type PublicRuntimeLimits struct {
 	ActiveTaskLimit  int   `json:"activeTaskLimit"`
+	BatchMaxCount    int   `json:"batchMaxCount"`
 	ResourceUploadMB int64 `json:"resourceUploadMB"`
 	SessionUploadMB  int64 `json:"sessionUploadMB"`
 }
@@ -115,6 +118,7 @@ func defaultRuntimePolicy() RuntimePolicySetting {
 			WorkerConcurrency:        effectiveChannelConcurrencyLimit(envInt("CANVAS_WORKER_CONCURRENCY", taskWorkerConcurrency)),
 			ChannelConcurrency:       defaultChannelConcurrencyLimit(),
 			ActiveTaskLimit:          5,
+			BatchMaxCount:            maxRuntimeBatchCount,
 			ImageTimeoutMinutes:      8,
 			TextTimeoutMinutes:       8,
 			AudioTimeoutMinutes:      8,
@@ -158,6 +162,7 @@ func selfUseRuntimePolicy() RuntimePolicySetting {
 	}
 	value.Task = RuntimeTaskPolicy{
 		WorkerConcurrency: maxRuntimeConcurrency, ChannelConcurrency: maxRuntimeConcurrency, ActiveTaskLimit: maxRuntimeConcurrency,
+		BatchMaxCount:       maxRuntimeBatchCount,
 		ImageTimeoutMinutes: maxRuntimeTimeoutMinutes, TextTimeoutMinutes: maxRuntimeTimeoutMinutes,
 		AudioTimeoutMinutes: maxRuntimeTimeoutMinutes, VideoTimeoutMinutes: maxRuntimeTimeoutMinutes,
 		StoryboardTimeoutMinutes: maxRuntimeTimeoutMinutes, DefaultTimeoutMinutes: maxRuntimeTimeoutMinutes,
@@ -193,7 +198,7 @@ func (s *Service) PublicRuntimeLimits() (*PublicRuntimeLimits, error) {
 		return nil, err
 	}
 	return &PublicRuntimeLimits{
-		ActiveTaskLimit: policy.Task.ActiveTaskLimit, ResourceUploadMB: policy.Resource.ResourceUploadMB,
+		ActiveTaskLimit: policy.Task.ActiveTaskLimit, BatchMaxCount: policy.Task.BatchMaxCount, ResourceUploadMB: policy.Resource.ResourceUploadMB,
 		SessionUploadMB: policy.Resource.SessionUploadMB,
 	}, nil
 }
@@ -275,6 +280,17 @@ func (s *Service) readRuntimePolicy() (*model.SystemSetting, RuntimePolicySettin
 	if strings.TrimSpace(setting.ValueJSON) == "" || json.Unmarshal([]byte(setting.ValueJSON), &value) != nil {
 		return nil, RuntimePolicySetting{}, errors.New("资源与请求策略配置格式无效")
 	}
+	// batchMaxCount 上线前保存的 runtime_policy 没有该字段。只为这个新增字段补默认值，
+	// 显式配置为 0 仍由校验拒绝，避免旧配置在升级后阻断登录和任务调度。
+	raw := struct {
+		Task map[string]json.RawMessage `json:"task"`
+	}{}
+	if json.Unmarshal([]byte(setting.ValueJSON), &raw) != nil {
+		return nil, RuntimePolicySetting{}, errors.New("资源与请求策略配置格式无效")
+	}
+	if _, configured := raw.Task["batchMaxCount"]; !configured {
+		value.Task.BatchMaxCount = maxRuntimeBatchCount
+	}
 	if err := validateRuntimePolicy(value); err != nil {
 		return nil, RuntimePolicySetting{}, err
 	}
@@ -319,6 +335,9 @@ func validateRuntimePolicy(value RuntimePolicySetting) error {
 		if item < 1 || item > maxRuntimeConcurrency {
 			return BadAuthRequest(fmt.Sprintf("%s必须是 1-%d 的整数", label, maxRuntimeConcurrency))
 		}
+	}
+	if task.BatchMaxCount < 1 || task.BatchMaxCount > maxRuntimeBatchCount {
+		return BadAuthRequest(fmt.Sprintf("单批生成任务上限必须是 1-%d 的整数", maxRuntimeBatchCount))
 	}
 	for label, item := range map[string]int{
 		"图片任务超时": task.ImageTimeoutMinutes, "文本任务超时": task.TextTimeoutMinutes,

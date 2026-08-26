@@ -1,0 +1,18 @@
+---
+title: 后端代码地图
+description: 迁移、邀请、分发、导演方案和 ComfyUI 协议入口
+---
+
+# 后端代码地图
+
+| 能力 | HTTP/CLI 入口 | Service | Repository/Model |
+| --- | --- | --- | --- |
+| 邀请注册 | `handler/auth.go` | `service/auth.go`, `service/invitations.go` | `repository/invitations.go`, `models_identity.go` |
+| ZQ 迁移与素材系列血缘 | `cmd/migrate-zq-studio` | `internal/zqmigration` | `models_migration.go` |
+| 单素材/批量/系列手动分发 | `handler/distribution.go` 的 `/assets/:id/publications`、`/publications/batch` | `service/distribution.go` | `repository/distribution.go` |
+| 导演方案选择 | `handler/project.go` | `service/director_proposal.go` | `repository/director_proposal.go` |
+| ComfyUI 工作流 | 任务 worker | `service/provider_comfyui.go` | `ModelChannel` / `ChannelModel` |
+| 管理员创建 | `cmd/create-admin` | 独立运维命令 | `User`, `AuthSession` |
+| 管理员查看用户内容 | `handler/auth.go` 的 `/admin/generated-content/*` | `service/admin_content.go` | `repository/admin_content.go`, `Task`, `Resource` |
+
+服务启动时执行 GORM schema 迁移，并在配置分发目标后启动 outbox worker。Canvas 新生成素材没有显式 `AssetVersion` 时，分发 service 会从素材 payload 中受控解析 `resource:<id>`，仍由当前用户资源归属和 ready 状态校验后入队；私有腾讯云资源未保存 `public_url` 时，会按已记录的 Endpoint、Bucket 和对象路径生成接收端可识别的稳定 COS 地址。`scripts/sync-zq-incremental.sh full` 用于一次性重建历史素材系列血缘，`once` 和 `watch` 继续承担增量追平；脚本不读取历史消息、旧任务实体和通知。ComfyUI adapter 是独立容器，不访问影策数据库；它只编译版本化 workflow、提交 ComfyUI prompt、查询 history、取消队列项和转发输出。

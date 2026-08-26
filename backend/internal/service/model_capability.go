@@ -151,6 +151,14 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		image.ResponseFormat.Supported = false
 		image.OutputFormat.Supported = false
 		image.MaxOutputs = 4
+	case model.ChannelInterfaceComfyUIWorkflow:
+		image.References.MaxImages = 9
+		image.References.MaskSupported = false
+		image.Quality.Supported = false
+		image.TransparentBackground.Supported = false
+		image.ResponseFormat.Supported = false
+		image.OutputFormat.Supported = false
+		image.MaxOutputs = 4
 	}
 	if model.ChannelInterfaceType(protocol) != model.ChannelInterfaceGrokImage && strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "grok-imagine-image") {
 		image.References.MaxImages = 0
@@ -244,6 +252,13 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Resolutions = []string{"768P", "2K"}
 		video.DefaultResolution = "768P"
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+	case model.ChannelInterfaceComfyUIWorkflow:
+		video.References.MaxImages = 9
+		video.References.MaxImageBytes = 30 * 1024 * 1024
+		video.Duration = VideoDurationConfig{Selection: "range", Min: 1, Max: 30, Step: 1, Default: 5}
+		video.Resolutions = []string{"480p", "720p", "1080p"}
+		video.DefaultResolution = "720p"
+		video.Operations = []string{"text_to_video", "image_to_video", "reference_to_video"}
 	}
 	return &ModelCapabilityConfig{Version: 1, Text: text, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
 }
