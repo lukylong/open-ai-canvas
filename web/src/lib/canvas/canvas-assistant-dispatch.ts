@@ -54,16 +54,29 @@ export function shouldApplyExternalAssistantSessionState(incoming: AssistantSess
     return incoming.sessions !== lastEmitted.sessions || incoming.activeSessionId !== lastEmitted.activeSessionId;
 }
 
+export function selectableOnlineAgentTextModels(config: AiConfig) {
+    const candidates = selectableModelsByCapability(config, "text");
+    const managed = candidates.filter((model) => {
+        const candidate = { ...config, model };
+        return resolveModelChannel(candidate, model).scope === "system" && Boolean(logicalModelIDForConfig(candidate));
+    });
+    // 只要目录中已经出现平台逻辑模型，就说明后端已切换到前台模型模式。
+    // 此模式下任务入口拒绝无 logicalModelId 的个人/旧系统渠道，所以 Agent
+    // 下拉和自动回退必须收敛到同一组可提交模型，避免把无效选择送到后端。
+    return managed.length ? managed : candidates;
+}
+
 export function resolveOnlineAgentRequestConfig(config: AiConfig) {
     const selectedModel = config.textModel || config.model;
     const selectedConfig = { ...config, model: selectedModel };
     const selectedChannel = resolveModelChannel(selectedConfig, selectedModel);
-    if (selectedChannel.scope !== "system" || logicalModelIDForConfig(selectedConfig)) return selectedConfig;
+    if (logicalModelIDForConfig(selectedConfig)) return selectedConfig;
 
-    const fallbackModel = selectableModelsByCapability(config, "text").find((model) => {
+    const fallbackModel = selectableOnlineAgentTextModels(config).find((model) => {
         const candidate = { ...config, model };
         return resolveModelChannel(candidate, model).scope === "system" && Boolean(logicalModelIDForConfig(candidate));
     });
-    if (!fallbackModel) throw new Error("当前网站 Agent 文本模型未绑定可用的平台逻辑模型，请在输入框左下角重新选择已启用的文本模型。");
-    return { ...config, model: fallbackModel, textModel: fallbackModel };
+    if (fallbackModel) return { ...config, model: fallbackModel, textModel: fallbackModel };
+    if (selectedChannel.scope !== "system") return selectedConfig;
+    throw new Error("当前网站 Agent 文本模型未绑定可用的平台逻辑模型，请在输入框左下角重新选择已启用的文本模型。");
 }

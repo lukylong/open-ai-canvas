@@ -1,4 +1,5 @@
 import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset, type CanvasAssetSource } from "@/lib/canvas/canvas-node-asset";
+import { creationResultAssetBatchId } from "@/lib/creation-image-generation";
 import { readImageMeta } from "@/lib/image-utils";
 import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
@@ -224,11 +225,18 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         source: "generation-task",
         generationEffectKey: input.effectKey,
         taskId: input.task.id,
-        batchId: input.task.batchId,
+        batchId: creationResultAssetBatchId({
+            batchId: input.task.batchId,
+            conversationId: input.task.clientContext?.conversationId,
+            messageId: input.task.clientContext?.messageId,
+            seriesId: input.task.clientContext?.seriesId,
+        }),
         outputIndex: input.output.outputIndex,
         conversationId: input.task.clientContext?.conversationId,
         messageId: input.task.clientContext?.messageId,
         batchIndex: input.task.batchIndex ?? input.task.clientContext?.batchIndex,
+        batchCount: input.task.clientContext?.batchCount,
+        seriesId: input.task.clientContext?.seriesId,
     };
 
     if (input.output.mediaType === "image") {

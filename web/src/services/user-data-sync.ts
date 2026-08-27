@@ -270,6 +270,26 @@ function requireRemoteUserDataBaseline() {
     if (remoteUserDataPhase !== "ready") throw new Error("云端数据基线尚未建立，已停止写入");
 }
 
+export function mergeRemoteSnapshotById<T extends { id?: string; updatedAt?: string }>(local: T[], remote: T[]) {
+    const items = new Map<string, T>();
+    remote.forEach((item) => {
+        if (item.id) items.set(item.id, item);
+    });
+    local.forEach((item) => {
+        if (!item.id) return;
+        const current = items.get(item.id);
+        // 同版本以服务器快照为准。数据迁移可能补齐 metadata 而保留业务 updatedAt；
+        // 若本地缓存用 >= 覆盖同时间戳快照，新增的系列/批次字段会一直不可见。
+        if (!current || timeValue(item.updatedAt) > timeValue(current.updatedAt)) items.set(item.id, item);
+    });
+    return Array.from(items.values()).sort((a, b) => timeValue(b.updatedAt) - timeValue(a.updatedAt));
+}
+
+function timeValue(value?: string) {
+    const time = value ? Date.parse(value) : 0;
+    return Number.isFinite(time) ? time : 0;
+}
+
 function sameEntitySnapshot<T>(acknowledged: T | undefined, current: T) {
     return acknowledged !== undefined && (acknowledged === current || JSON.stringify(acknowledged) === JSON.stringify(current));
 }

@@ -1,5 +1,7 @@
 import { localForageStorageForScope } from "@/lib/localforage-storage";
+import { createClientId } from "@/lib/client-id";
 import { getActiveUserScope } from "@/lib/user-scope";
+import { withBrowserCompatibleLock } from "@/services/browser-compatible-lock";
 import type { GenerationTaskEffectClaim, GenerationTaskEffectResult, GenerationTaskEffectStore } from "@/services/generation-task-materializer";
 
 type EffectRecord = {
@@ -24,10 +26,6 @@ type EffectLease = {
     fence: number;
 };
 
-type AsyncLock = {
-    request<T>(name: string, callback: () => Promise<T>): Promise<T>;
-};
-
 type EffectStorage = {
     getItem(name: string): string | null | Promise<string | null>;
     setItem(name: string, value: string): unknown | Promise<unknown>;
@@ -37,7 +35,6 @@ const EFFECT_STORAGE_PREFIX = "infinite-canvas:generation-effect:";
 const EFFECT_LOCK_PREFIX = "infinite-canvas:generation-effect-lock:";
 const DEFAULT_LEASE_MS = 30_000;
 const inProcessRecords = new Map<string, string>();
-const inProcessLockTails = new Map<string, Promise<void>>();
 
 function effectStorage(scope: string): EffectStorage {
     if (typeof window !== "undefined") return localForageStorageForScope(scope);
@@ -45,32 +42,6 @@ function effectStorage(scope: string): EffectStorage {
         getItem: async (name) => inProcessRecords.get(name) ?? null,
         setItem: async (name, value) => {
             inProcessRecords.set(name, value);
-        },
-    };
-}
-
-function effectLock(): AsyncLock {
-    if (typeof window !== "undefined") {
-        const locks = navigator.locks;
-        if (!locks) throw new Error("当前浏览器不支持跨页面生成副作用互斥");
-        return locks;
-    }
-    return {
-        async request<T>(name: string, callback: () => Promise<T>) {
-            const prior = inProcessLockTails.get(name) ?? Promise.resolve();
-            let release!: () => void;
-            const tail = new Promise<void>((resolve) => {
-                release = resolve;
-            });
-            const queued = prior.then(() => tail);
-            inProcessLockTails.set(name, queued);
-            await prior;
-            try {
-                return await callback();
-            } finally {
-                release();
-                if (inProcessLockTails.get(name) === queued) inProcessLockTails.delete(name);
-            }
         },
     };
 }
@@ -159,7 +130,7 @@ export function createProviderNeutralGenerationTaskEffectStore(
     }
 
     async function withRecord<T>(scope: string, taskId: string, effectKey: string, action: (record: EffectRecord | undefined, storage: EffectStorage, key: string) => Promise<T>) {
-        return effectLock().request(lockKey(scope, effectKey), async () => {
+        return withBrowserCompatibleLock(lockKey(scope, effectKey), async () => {
             const storage = effectStorage(scope);
             const key = recordKey(scope, effectKey);
             return action(parseRecord(await storage.getItem(key), taskId, effectKey), storage, key);
@@ -181,7 +152,7 @@ export function createProviderNeutralGenerationTaskEffectStore(
                     scope,
                     taskId,
                     effectKey,
-                    leaseToken: crypto.randomUUID(),
+                    leaseToken: createClientId(),
                     expiresAt: new Date(current.getTime() + leaseMs).toISOString(),
                     fence: (record?.fence ?? 0) + 1,
                 };

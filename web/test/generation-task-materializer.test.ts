@@ -636,6 +636,63 @@ describe("generation task materializer", () => {
         }
     });
 
+    test("provider-neutral effects complete through the compatible fallback without navigator.locks", async () => {
+        const originalWindow = (globalThis as { window?: unknown }).window;
+        const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+        const originalLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
+        const originalGetItem = localforage.getItem.bind(localforage);
+        const originalSetItem = localforage.setItem.bind(localforage);
+        const localStorageValues = new Map<string, string>();
+        const durableValues = new Map<string, unknown>();
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                localStorage: {
+                    getItem: (key: string) => localStorageValues.get(key) ?? null,
+                    setItem: (key: string, value: string) => localStorageValues.set(key, value),
+                    removeItem: (key: string) => localStorageValues.delete(key),
+                },
+            },
+        });
+        Object.defineProperty(globalThis, "crypto", {
+            configurable: true,
+            value: {
+                getRandomValues: originalCrypto?.value?.getRandomValues?.bind(originalCrypto.value),
+            },
+        });
+        delete (navigator as { locks?: unknown }).locks;
+        localforage.getItem = (async (key: string) => durableValues.get(key) ?? null) as typeof localforage.getItem;
+        localforage.setItem = (async (key: string, value: unknown) => {
+            durableValues.set(key, value);
+            return value;
+        }) as typeof localforage.setItem;
+
+        try {
+            setActiveUserScope("http-browser-fallback");
+            const effectKey = "materialize:http-browser-task:0";
+            const store = createProviderNeutralGenerationTaskEffectStore();
+            const claim = await store.claim(effectKey, "http-browser-task");
+
+            expect(claim).toMatchObject({ status: "claimed", fence: 1 });
+            await store.complete(effectKey, "http-browser-task", { materializedAssetId: "generation-http-browser-task" }, claim.status === "claimed" ? claim.binding : undefined);
+            expect(await createProviderNeutralGenerationTaskEffectStore().claim(effectKey, "http-browser-task")).toEqual({
+                status: "completed",
+                result: { materializedAssetId: "generation-http-browser-task" },
+            });
+            expect([...localStorageValues.keys()].some((key) => key.includes("compatible-browser-lock"))).toBe(false);
+        } finally {
+            setActiveUserScope(null);
+            localforage.getItem = originalGetItem;
+            localforage.setItem = originalSetItem;
+            if (originalLocks) Object.defineProperty(navigator, "locks", originalLocks);
+            else delete (navigator as { locks?: unknown }).locks;
+            if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+            else delete (globalThis as { crypto?: unknown }).crypto;
+            if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+            else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+        }
+    });
+
     test("aborting a busy effect waiter clears its timer and prevents later claim or sink", async () => {
         const originalSetTimeout = globalThis.setTimeout;
         const originalClearTimeout = globalThis.clearTimeout;
@@ -1573,7 +1630,7 @@ describe("generation task materializer", () => {
         expect(recovered.resultState).toBe("READY");
     });
 
-    test("two materializer instances atomically insert or return one asset for the same effect key", async () => {
+    test("HTTP browsers without crypto.subtle still atomically materialize one stable generation asset", async () => {
         const task: GenerationTask = {
             id: "dreamina:concurrent-asset-task",
             type: "image",
@@ -1586,6 +1643,14 @@ describe("generation task materializer", () => {
             updatedAt: "2026-08-13T00:00:00.000Z",
         };
         const previousAssets = useAssetStore.getState().assets;
+        const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+        Object.defineProperty(globalThis, "crypto", {
+            configurable: true,
+            value: {
+                getRandomValues: originalCrypto?.value?.getRandomValues?.bind(originalCrypto.value),
+                randomUUID: originalCrypto?.value?.randomUUID?.bind(originalCrypto.value),
+            },
+        });
         useAssetStore.getState().replaceAssets([]);
         const asset: NewAsset = {
             kind: "image",
@@ -1619,6 +1684,8 @@ describe("generation task materializer", () => {
             expect(stored[0]?.id).toBe(assetIds[0]);
         } finally {
             useAssetStore.getState().replaceAssets(previousAssets);
+            if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+            else delete (globalThis as { crypto?: unknown }).crypto;
         }
     });
 

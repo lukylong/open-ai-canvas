@@ -25,6 +25,7 @@ type TaskSummary struct {
 	Operation                 string                     `json:"operation,omitempty"`
 	Provider                  string                     `json:"provider,omitempty"`
 	Model                     string                     `json:"model,omitempty"`
+	LogicalModelID            string                     `json:"logicalModelId,omitempty"`
 	ProviderRequestID         string                     `json:"providerRequestId,omitempty"`
 	ProviderCancelStatus      model.ProviderCancelStatus `json:"providerCancelStatus,omitempty"`
 	ProviderCancelError       string                     `json:"providerCancelError,omitempty"`
@@ -48,6 +49,7 @@ type TaskClientContext struct {
 	MessageID      string `json:"messageId"`
 	BatchIndex     int    `json:"batchIndex,omitempty"`
 	BatchCount     int    `json:"batchCount,omitempty"`
+	SeriesID       string `json:"seriesId,omitempty"`
 }
 
 type TaskBillingSummary struct {
@@ -111,6 +113,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		Operation:                 task.Operation,
 		Provider:                  task.Provider,
 		Model:                     task.Model,
+		LogicalModelID:            task.LogicalModelID,
 		ProviderRequestID:         task.ProviderRequestID,
 		ProviderCancelStatus:      task.ProviderCancelStatus,
 		ProviderCancelError:       task.ProviderCancelError,
@@ -138,6 +141,7 @@ func taskClientContext(raw string) *TaskClientContext {
 			MessageID      string `json:"messageId"`
 			BatchIndex     int    `json:"batchIndex"`
 			BatchCount     int    `json:"batchCount"`
+			SeriesID       string `json:"seriesId"`
 		} `json:"metadata"`
 	}
 	if json.Unmarshal([]byte(raw), &input) != nil || input.Metadata.Source != "create-page" || input.Metadata.ConversationID == "" || input.Metadata.MessageID == "" {
@@ -148,6 +152,7 @@ func taskClientContext(raw string) *TaskClientContext {
 		MessageID:      input.Metadata.MessageID,
 		BatchIndex:     input.Metadata.BatchIndex,
 		BatchCount:     input.Metadata.BatchCount,
+		SeriesID:       input.Metadata.SeriesID,
 	}
 }
 

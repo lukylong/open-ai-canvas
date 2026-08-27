@@ -88,15 +88,15 @@ func (s *Service) validateTaskBatchTemplate(userID string, req *CreateTaskReques
 	if req == nil || strings.TrimSpace(req.Prompt) == "" {
 		return "", BadAuthRequest("批量生成提示词不能为空")
 	}
-	if strings.TrimSpace(req.LogicalModelID) == "" {
-		return "", BadAuthRequest("批量生成必须选择后台配置的平台模型")
-	}
 	if err := validateTaskType(strings.TrimSpace(req.Type)); err != nil {
 		return "", err
 	}
 	normalizedInput, err := normalizeTaskInput(req.Input)
 	if err != nil {
 		return "", err
+	}
+	if !taskBatchTemplateUsesManagedRuntime(req, normalizedInput) {
+		return "", BadAuthRequest("批量生成必须选择后台平台模型、系统渠道或 ComfyUI 工作流")
 	}
 	mode := strings.TrimSpace(fmt.Sprint(normalizedInput["mode"]))
 	if mode != "image" && mode != "video" {
@@ -108,12 +108,19 @@ func (s *Service) validateTaskBatchTemplate(userID string, req *CreateTaskReques
 	if mode == "video" && !strings.HasPrefix(req.Type, "canvas_video") {
 		return "", BadAuthRequest("视频批次任务类型无效")
 	}
-	intent := ModelRequestIntentFromTaskInput(normalizedInput, req.Type, req.Operation)
-	routed, err := s.ResolveLogicalModel(strings.TrimSpace(req.LogicalModelID), intent)
-	if err != nil {
-		return "", err
+	logicalModelID := strings.TrimSpace(req.LogicalModelID)
+	if logicalModelID != "" {
+		intent := ModelRequestIntentFromTaskInput(normalizedInput, req.Type, req.Operation)
+		routed, routeErr := s.ResolveLogicalModel(logicalModelID, intent)
+		if routeErr != nil {
+			return "", routeErr
+		}
+		normalizedInput = applyRoutedProviderSelection(normalizedInput, routed)
+	} else if !taskInputUsesWorkflowProvider(normalizedInput) {
+		if err := s.validateSystemChannelModelSelection(normalizedInput); err != nil {
+			return "", err
+		}
 	}
-	normalizedInput = applyRoutedProviderSelection(normalizedInput, routed)
 	if err := s.ValidateTaskCapability(normalizedInput); err != nil {
 		return "", err
 	}
@@ -123,10 +130,31 @@ func (s *Service) validateTaskBatchTemplate(userID string, req *CreateTaskReques
 	if err := s.ensureTaskProjectActive(userID, req.ProjectID); err != nil {
 		return "", err
 	}
-	// Persist only the normalized logical-model template. Browser supplied
-	// channel URLs, headers or credentials have already been removed by routing.
+	// 只持久化经过校验的托管模板：逻辑模型已经移除供应链字段，系统渠道只保留
+	// 固定占位密钥，ComfyUI Bridge 只保留服务器工作流引用。
 	req.Input = normalizedInput
 	return mode, nil
+}
+
+// 批次模板会在数据库中长期保存，所以只接受不携带用户明文密钥的后端托管运行时。
+// 系统渠道使用固定占位密钥，ComfyUI Bridge 使用服务器本机配置；RunningHub 和
+// 自定义渠道仍需先改造成服务端密钥引用，不能把真实密钥复制到整个批次模板。
+func taskBatchTemplateUsesManagedRuntime(req *CreateTaskRequest, input map[string]any) bool {
+	if strings.TrimSpace(req.LogicalModelID) != "" {
+		return true
+	}
+	config, _ := input["config"].(map[string]any)
+	interfaceType := strings.TrimSpace(fmt.Sprint(config["interfaceType"]))
+	if isComfyBridgeInterface(interfaceType) {
+		return true
+	}
+	if taskInputUsesWorkflowProvider(input) {
+		return false
+	}
+	channelID := strings.TrimSpace(fmt.Sprint(config["channelId"]))
+	baseURL := strings.TrimSpace(fmt.Sprint(config["baseUrl"]))
+	apiKey := strings.TrimSpace(fmt.Sprint(config["apiKey"]))
+	return (channelID != "" || systemChannelIDFromBaseURL(baseURL) != "") && strings.EqualFold(apiKey, "system")
 }
 
 func (s *Service) TaskBatches(userID string, limit int) ([]model.TaskBatch, error) {

@@ -33,7 +33,7 @@ import { canvasAgentPostconditionMessage, previewCanvasAgentOps, summarizeCanvas
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@/lib/canvas/canvas-agent-context";
 import { canvasAgentPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { resolveStoryboardGenerationContext } from "@/lib/canvas/canvas-storyboard-context";
-import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
+import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
 import { createDirectorPromptProposal, selectDirectorPromptProposal, type DirectorPromptProposal } from "@/services/api/projects";
 import { buildSkillMentionReferences } from "@/lib/canvas/canvas-skill-mentions";
 import { buildCanvasWorkflowOps, looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@/lib/canvas/canvas-agent-workflow";
@@ -1377,7 +1377,7 @@ export function CanvasAssistantPanel({
 }
 
 function AgentTextModelPicker({ config, value, onChange }: { config: AiConfig; value: string; onChange: (model: string) => void }) {
-    const options = useMemo(() => Array.from(new Set([value, ...selectableModelsByCapability(config, "text")].filter(Boolean))), [config, value]);
+    const options = useMemo(() => Array.from(new Set(selectableOnlineAgentTextModels(config).filter(Boolean))), [config]);
     const current = value || "";
     return (
         <div className="min-w-0 max-w-[240px]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>

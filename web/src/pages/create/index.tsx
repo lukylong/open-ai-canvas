@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type FocusEvent, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { App, Button, Drawer, Modal, Popover, Spin, Tooltip } from "antd";
 import { Reorder } from "motion/react";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Clock3, Copy, Download, FileText, Film, FolderOpen, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Music2, Paperclip, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Clock3, Copy, Download, FileText, Film, FolderOpen, History, Image as ImageIcon, Layers3, LoaderCircle, Maximize2, MessageSquareText, Music2, Paperclip, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
 import { Link } from "react-router";
 
 import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
@@ -16,6 +16,8 @@ import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { creationCanvasHandoffPath, creationResultAssetIds } from "@/lib/canvas/canvas-asset-handoff";
 import { createGenerationBatchRetryContexts, createGenerationRetryContext, runGenerationOperationOnce, type GenerationRetryContext } from "@/lib/canvas/canvas-project-generation";
 import { createClientId } from "@/lib/client-id";
+import { STANDARD_IMAGE_GENERATION_MAX, creationAssetsDetailPath, creationImageConversationPreviewLimit, creationImageCountLimit, creationImageSeriesId, creationImageTaskResultCompletesMessage, mergeCreationResultUrls, normalizeCreationImageCount } from "@/lib/creation-image-generation";
+import { groupAssetSeries } from "@/lib/asset-series";
 import { generationErrorCode, generationErrorMessage } from "@/lib/generation-error";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
@@ -50,7 +52,7 @@ import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttac
 type CreationMode = "text" | "image" | "video";
 type CreationViewMode = "chat" | "storyboard";
 type CreationStatus = "streaming" | "pending" | "done" | "error" | "cancelled";
-type CreationSettings = { ratio: string; seconds: string; quality: string; videoQuality: string; count: string };
+type CreationSettings = { ratio: string; seconds: string; quality: string; videoQuality: string; count: string; seriesMode?: boolean };
 type CreationRetryContext = GenerationRetryContext & { retryContextsByBatchIndex?: GenerationRetryContext[] };
 type CreationMessage = {
     id: string;
@@ -71,6 +73,7 @@ type CreationMessage = {
     taskIds?: string[];
 	taskBatchId?: string;
 	taskBatchStatus?: TaskBatchStatus;
+    seriesId?: string;
     clientOperationId?: string;
     retryOf?: string;
     attemptGroupId?: string;
@@ -128,10 +131,10 @@ function shotsFromMessages(messages: CreationMessage[]): CreationShot[] {
     return shots;
 }
 
-function completedCreationGenerationTask(input: { taskId: string; task?: GenerationTask; mode: "image" | "video"; prompt: string; result: BackendGenerationResult; conversationId: string; messageId: string; batchIndex?: number; batchCount?: number }): GenerationTask {
+function completedCreationGenerationTask(input: { taskId: string; task?: GenerationTask; mode: "image" | "video"; prompt: string; result: BackendGenerationResult; conversationId: string; messageId: string; batchIndex?: number; batchCount?: number; seriesId?: string }): GenerationTask {
     const now = new Date().toISOString();
     const task = input.task ?? { id: input.taskId, type: input.mode, status: "succeeded" as const, prompt: input.prompt, attempts: 1, createdAt: now, updatedAt: now };
-    return projectGenerationTaskResult({ ...task, status: "succeeded", prompt: input.prompt, clientContext: { conversationId: input.conversationId, messageId: input.messageId, ...(typeof input.batchIndex === "number" ? { batchIndex: input.batchIndex } : {}), ...(typeof input.batchCount === "number" ? { batchCount: input.batchCount } : {}) } }, input.result);
+    return projectGenerationTaskResult({ ...task, status: "succeeded", prompt: input.prompt, clientContext: { ...task.clientContext, conversationId: input.conversationId, messageId: input.messageId, ...(typeof input.batchIndex === "number" ? { batchIndex: input.batchIndex } : {}), ...(typeof input.batchCount === "number" ? { batchCount: input.batchCount } : {}), ...(input.seriesId ? { seriesId: input.seriesId } : {}) } }, input.result);
 }
 
 export default function CreatePage() {
@@ -161,7 +164,8 @@ export default function CreatePage() {
     const [seconds, setSeconds] = useState("6");
     const [quality, setQuality] = useState("auto");
     const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
-	const [count, setCount] = useState(String(Math.max(1, Math.min(batchMaxCount, Number(config.count) || 1))));
+	const [seriesMode, setSeriesMode] = useState(false);
+	const [count, setCount] = useState(String(normalizeCreationImageCount(config.count, false, batchMaxCount)));
     const [busy, setBusy] = useState(false);
     const [viewMode, setViewMode] = useState<CreationViewMode>("chat");
     const [selectedShotIndex, setSelectedShotIndex] = useState(-1);
@@ -236,8 +240,8 @@ export default function CreatePage() {
 	}, [mode, selectedModel, imageProfile]);
 
 	useEffect(() => {
-		setCount((current) => String(Math.max(1, Math.min(batchMaxCount, Math.floor(Number(current)) || 1))));
-	}, [batchMaxCount]);
+		setCount((current) => String(normalizeCreationImageCount(current, seriesMode, batchMaxCount)));
+	}, [batchMaxCount, seriesMode]);
 
     useEffect(() => {
         if (mode !== "video") return;
@@ -302,7 +306,11 @@ export default function CreatePage() {
                 await consumeGenerationTaskMessage(task, task.clientContext!.messageId!, async ({ effectKey, resultUrls }) => {
                     if (cancelled) return;
                     await updateConversationMessage(task.clientContext!.conversationId!, task.clientContext!.messageId!, (item) =>
-                        applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, resultUrls: Array.from(new Set([...(current.resultUrls || []), ...resultUrls])) })).value,
+                        applyGenerationConsumerEffect(item, effectKey, (current) => ({
+                            ...current,
+                            status: creationImageTaskResultCompletesMessage(current.taskBatchId, current.settings?.count) ? "done" as const : current.status,
+                            resultUrls: mergeCreationResultUrls(current.resultUrls, resultUrls),
+                        })).value,
                     );
                 }, { signal: observationController.signal, materialize: async () => task, materializedUrls: generationTaskMaterializedUrls });
             }
@@ -580,7 +588,7 @@ export default function CreatePage() {
             releaseRetryLock();
             return;
         }
-        const settings = { ratio, seconds, quality, videoQuality, count };
+        const settings = { ratio, seconds, quality, videoQuality, count, seriesMode };
         const references = selectedCreationReferences(text, mentionReferences);
         // 后端对图片和视频使用不同的参考字段；这里先拆分，避免媒体类型在写入任务时被误判。
         const { referenceImages, referenceVideos, referenceAudios } = splitCreationAttachments(attachments);
@@ -596,7 +604,8 @@ export default function CreatePage() {
         followLatestMessageRef.current = true;
         const userMessage = newMessage("user", text, { mode, model: selectedModel, attachments, references, settings });
 		const operationId = retryContext?.clientOperationId || createClientId();
-		const assistantMessage = newMessage("assistant", "", { mode, model: selectedModel, status: mode === "text" ? "streaming" : "pending", settings, clientOperationId: operationId, ...retryContext });
+		const seriesId = creationImageSeriesId(mode === "image" && seriesMode, operationId);
+		const assistantMessage = newMessage("assistant", "", { mode, model: selectedModel, status: mode === "text" ? "streaming" : "pending", settings, clientOperationId: operationId, ...(seriesId ? { seriesId } : {}), ...retryContext });
         const originConversationId = activeConversation.id;
         const updateOriginAssistant = (updater: (item: CreationMessage) => CreationMessage) => updateConversationMessage(originConversationId, assistantMessage.id, updater);
         const boundTaskIds = new Set<string>();
@@ -690,16 +699,17 @@ export default function CreatePage() {
 					replayPublisher.finish(finalText);
 				}
             } else if (mode === "image") {
-				const taskCount = Math.max(1, Math.min(batchMaxCount, Math.floor(Number(count) || 1)));
+				const taskCount = normalizeCreationImageCount(count, seriesMode, batchMaxCount);
                 const settled = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTaskBatch({
                     mode: "image",
                     prompt: expandedPrompt,
                     config: { ...requestConfig, count: "1" },
                     referenceImages,
                     signal: requestLifecycle.signal,
-                    metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
+                    metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...(seriesId ? { seriesId } : {}), ...referenceMetadata },
 					onTaskUpdate: bindTask,
 					onBatchUpdate: bindBatch,
+					seriesMode,
 					count: taskCount,
 					clientOperationId: operationId,
 					...retryContext,
@@ -718,9 +728,14 @@ export default function CreatePage() {
                 const taskFailures = settled.filter((entry): entry is PromiseRejectedResult => entry.status === "rejected");
                 const storedImages = await Promise.allSettled(generatedImages.map(async ({ image, taskId, batchIndex }) => {
                     if (!taskId) throw new Error("生成任务缺少稳定任务标识");
-                    const task = completedCreationGenerationTask({ taskId, task: boundTasks.get(taskId), mode: "image", prompt: expandedPrompt, result: { mode: "image", images: [image] }, conversationId: activeConversation.id, messageId: assistantMessage.id, batchIndex, batchCount: taskCount });
+                    const task = completedCreationGenerationTask({ taskId, task: boundTasks.get(taskId), mode: "image", prompt: expandedPrompt, result: { mode: "image", images: [image] }, conversationId: activeConversation.id, messageId: assistantMessage.id, batchIndex, batchCount: taskCount, seriesId });
                     const materialized = await consumeGenerationTaskMessage(task, assistantMessage.id, async ({ resultUrls, effectKey }) => {
-                        await updateOriginAssistant((item) => applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, content: "图片已生成", resultUrls: Array.from(new Set([...(current.resultUrls || []), ...resultUrls])) })).value);
+                        await updateOriginAssistant((item) => applyGenerationConsumerEffect(item, effectKey, (current) => ({
+                            ...current,
+                            status: creationImageTaskResultCompletesMessage(current.taskBatchId, current.settings?.count) ? "done" as const : current.status,
+                            content: "图片已生成",
+                            resultUrls: mergeCreationResultUrls(current.resultUrls, resultUrls),
+                        })).value);
                     }, { signal: requestLifecycle.signal });
                     const url = generationTaskMaterializedUrls(materialized)[0];
                     if (!url) throw new Error("图片结果资源不可用");
@@ -734,7 +749,13 @@ export default function CreatePage() {
                     throw reason instanceof Error ? reason : new Error("后端任务没有返回图片");
                 }
                 if (failedCount) toast.warning(`${resultUrls.length} 张图片已生成，${failedCount} 张生成失败`);
-                updateOriginAssistant((item) => ({ ...item, content: failedCount ? `${resultUrls.length} 张图片已生成，${failedCount} 张失败` : "图片已生成" }));
+                await updateOriginAssistant((item) => ({
+					...item,
+					status: "done",
+					content: failedCount ? `${resultUrls.length} 张图片已生成，${failedCount} 张失败` : "图片已生成",
+					resultUrls: mergeCreationResultUrls(item.resultUrls, resultUrls),
+					taskIds: Array.from(new Set([...(item.taskIds || []), ...boundTaskIdList])),
+				}));
             } else {
                 const result = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTask({
                     mode: "video",
@@ -858,7 +879,9 @@ export default function CreatePage() {
         setSeconds(nextSettings.seconds);
         setQuality(nextSettings.quality);
         setVideoQuality(nextSettings.videoQuality);
-        setCount(nextSettings.count);
+		const nextSeriesMode = Boolean(nextSettings.seriesMode);
+		setSeriesMode(nextSeriesMode);
+		setCount(String(normalizeCreationImageCount(nextSettings.count, nextSeriesMode, batchMaxCount)));
     };
 
 	const retryFailedMessage = async (item: CreationMessage, index: number) => {
@@ -965,6 +988,11 @@ export default function CreatePage() {
         setVideoQuality,
 		count,
 		setCount,
+		seriesMode,
+		setSeriesMode: (next: boolean) => {
+			setSeriesMode(next);
+			setCount((current) => String(normalizeCreationImageCount(current, next, batchMaxCount)));
+		},
 		batchMaxCount,
 		activeTaskLimit,
         promptOptimizerProvider,
@@ -1121,8 +1149,10 @@ function CreationWorkspaceToolbar({ viewMode, onViewModeChange, onNewConversatio
 function CreationMessageView({ item, modelName, onRetryFailure, onCreateVariant }: { item: CreationMessage; modelName: string; onRetryFailure: () => void; onCreateVariant: () => void }) {
     if (item.role === "user") return <CreationUserMessage item={item} />;
     const mode = item.mode || "text";
+    const isImageSeries = mode === "image" && Boolean(item.settings?.seriesMode);
+    const completedImageCount = item.resultUrls?.length || Number(item.settings?.count) || 1;
     const stateLabel = item.status === "pending" ? "生成中" : item.status === "cancelled" ? "已停止" : item.status === "error" ? "生成失败" : "";
-	const heading = <><span className="creation-message-mark"><Sparkles /></span><strong>{mode === "image" ? "图像生成" : mode === "video" ? "视频生成" : "影策 AI"}</strong>{mode !== "text" ? <span className="creation-message-progress-copy">{item.status === "pending" ? item.generationStage || `影策正在生成${mode === "video" ? "视频" : "图像"}……` : item.status === "done" ? `你的${mode === "video" ? "视频" : "图像"}已创建` : null}</span> : null}{modelName ? <span className="creation-message-model">{modelName}</span> : null}{item.createdAt ? <time dateTime={item.createdAt}>{formatMessageTime(item.createdAt)}</time> : null}{stateLabel ? <span className={`creation-message-state is-${item.status}`}>{stateLabel}</span> : null}</>;
+	const heading = <><span className="creation-message-mark"><Sparkles /></span><strong>{isImageSeries ? "图片系列" : mode === "image" ? "图像生成" : mode === "video" ? "视频生成" : "影策 AI"}</strong>{mode !== "text" ? <span className="creation-message-progress-copy">{item.status === "pending" ? item.generationStage || `影策正在生成${mode === "video" ? "视频" : "图像"}……` : item.status === "done" ? isImageSeries ? `系列已创建 · ${completedImageCount} 张` : mode === "image" && completedImageCount > 1 ? `${completedImageCount} 张图片已创建` : `你的${mode === "video" ? "视频" : "图像"}已创建` : null}</span> : null}{modelName ? <span className="creation-message-model">{modelName}</span> : null}{item.createdAt ? <time dateTime={item.createdAt}>{formatMessageTime(item.createdAt)}</time> : null}{stateLabel ? <span className={`creation-message-state is-${item.status}`}>{stateLabel}</span> : null}</>;
     const toolStatus: GenerationToolStatus = item.status === "pending" ? "running" : item.status === "error" ? "error" : item.status === "cancelled" ? "cancelled" : "completed";
     return <article className={`creation-assistant-message is-${mode}`}>
         {mode === "text" ? <><div className="creation-message-heading">{heading}</div>{item.reasoning ? <MessageReasoning reasoning={item.reasoning} isStreaming={item.status === "streaming"} /> : null}<div className="creation-message-content">{item.content ? <AIMessageMarkdown isStreaming={item.status === "streaming"}>{item.content}</AIMessageMarkdown> : <span>正在生成…</span>}</div></> : <GenerationToolCard status={toolStatus} isBulk={(item.resultUrls?.length || Number(item.settings?.count) || 1) > 1} heading={heading}><MediaResult item={item} onRetryFailure={onRetryFailure} onCreateVariant={onCreateVariant} /></GenerationToolCard>}
@@ -1154,17 +1184,26 @@ function MediaResult({ item, onRetryFailure, onCreateVariant }: { item: Creation
     const [previewType, setPreviewType] = useState<"image" | "video">("image");
 	const assets = useAssetStore((state) => state.assets);
 	const resultUrls = item.resultUrls || [];
-	const visibleResultUrls = resultUrls.slice(0, 100);
     const resultAssetIds = resultUrls.length ? creationResultAssetIds(assets, { messageId: item.id, taskIds: item.taskIds || [], resultUrls }) : [];
     const canvasPath = creationCanvasHandoffPath(resultAssetIds) || "/canvas";
 	if (item.status === "pending") return <CreationMediaPending mode={item.mode || "image"} ratio={item.settings?.ratio} taskBatchId={item.taskBatchId} taskBatchStatus={item.taskBatchStatus} />;
     if ((item.status === "error" || item.status === "cancelled") && !resultUrls.length) return <div className="creation-media-error"><span>{item.status === "cancelled" ? item.content || "已停止" : generationErrorMessage(item.error || "生成失败")}</span><button type="button" onClick={onRetryFailure}><RefreshCw />重新生成</button></div>;
     if (!resultUrls.length) return <div className="creation-media-empty">没有返回可预览结果 <button type="button" onClick={onRetryFailure}>重试</button></div>;
     const isVideo = item.mode === "video";
+    const isSeries = item.mode === "image" && Boolean(item.settings?.seriesMode);
+    const previewLimit = isVideo ? 1 : creationImageConversationPreviewLimit(isSeries, resultUrls.length);
+    const visibleResultUrls = resultUrls.slice(0, previewLimit);
+    const hiddenResultCount = Math.max(0, resultUrls.length - visibleResultUrls.length);
+    const resultAssetIDSet = new Set(resultAssetIds);
+    const resultSeries = isSeries ? groupAssetSeries(assets.filter((asset) => resultAssetIDSet.has(asset.id)))[0] : undefined;
+    const assetsPath = creationAssetsDetailPath({ messageId: item.id, seriesMode: isSeries, seriesId: resultSeries?.seriesId || item.taskBatchId || item.seriesId });
     return <div className="creation-media-result">
-		{isVideo ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewUrl(resultUrls[0]); }} aria-label="预览生成视频"><video muted preload="metadata" src={resultUrls[0]} /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{visibleResultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewUrl(url); }} aria-label="预览生成图片"><img src={url} alt="生成结果" loading="lazy" /><span><Maximize2 /></span></button>)}</div>}
-		{resultUrls.length > visibleResultUrls.length ? <p className="text-xs text-foreground/55">当前对话预览前 {visibleResultUrls.length} 张，全部 {resultUrls.length} 张已进入素材库。</p> : null}
-		<div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{visibleResultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{visibleResultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+		{isVideo ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewUrl(resultUrls[0]); }} aria-label="预览生成视频"><video muted preload="metadata" src={resultUrls[0]} /><span><Maximize2 />预览视频</span></button> : isSeries ? <div className="creation-series-result-card">
+            <button type="button" className="creation-series-result-cover" onClick={() => { setPreviewType("image"); setPreviewUrl(resultUrls[0]); }} aria-label="预览系列封面"><img src={resultUrls[0]} alt="系列封面" loading="lazy" /><span><Maximize2 /></span></button>
+            <div className="creation-series-result-copy"><span><Layers3 />素材系列</span><strong>共 {resultUrls.length} 张图片</strong><p>图片已归入同一系列，对话中仅展示封面。</p><Link to={assetsPath}>查看系列详情<ChevronRight /></Link></div>
+        </div> : <div className={`creation-image-result-grid${resultUrls.length > 1 ? " is-multi" : ""}`}>{visibleResultUrls.map((url, index) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewUrl(url); }} aria-label={`预览生成图片 ${index + 1}`}><img src={url} alt={`生成结果 ${index + 1}`} loading="lazy" /><span><Maximize2 /></span>{hiddenResultCount > 0 && index === visibleResultUrls.length - 1 ? <em>+{hiddenResultCount}</em> : null}</button>)}</div>}
+		{!isSeries && hiddenResultCount > 0 ? <p className="creation-media-result-note">对话中展示前 {visibleResultUrls.length} 张，全部 {resultUrls.length} 张已进入素材库。</p> : null}
+		<div className="creation-media-actions">{isSeries ? <><span>图片系列 · {resultUrls.length} 张</span><Link className="is-primary" to={assetsPath}><Layers3 />查看系列详情</Link><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button></> : <><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button>{!isVideo && resultUrls.length > 1 ? <Link to={assetsPath}><Layers3 />查看全部素材</Link> : null}<Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{visibleResultUrls.length === 1 ? <a href={visibleResultUrls[0]} download><Download />下载</a> : null}</>}</div>
         <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </div>;
 }
@@ -1249,6 +1288,8 @@ type ComposerProps = {
     setVideoQuality: (value: string) => void;
 	count: string;
 	setCount: (value: string) => void;
+	seriesMode: boolean;
+	setSeriesMode: (value: boolean) => void;
 	batchMaxCount: number;
 	activeTaskLimit: number;
     promptOptimizerProvider: PromptOptimizerProvider | null;
@@ -1483,6 +1524,7 @@ function ModePicker({ mode, onModeChange }: { mode: CreationMode; onModeChange: 
 function GenerationSettingsMenu(props: ComposerProps) {
     const [open, setOpen] = useState(false);
     const [customRatioOpen, setCustomRatioOpen] = useState(!ratioOptions.some((option) => option.value === props.ratio));
+	const countLimit = creationImageCountLimit(props.seriesMode, props.batchMaxCount);
     const activeQualityOptions = props.imageProfile.quality.values.map((value) => qualityOptions.find((item) => item.value === value) || { value, label: value.toUpperCase(), description: "模型支持的质量/分辨率" });
     const qualityLabel = activeQualityOptions.find((item) => item.value === props.quality)?.label || qualityOptions.find((item) => item.value === props.quality)?.label || props.quality || "自动";
     // 尺寸/比例/分辨率选项取同显示名分组内全部模型的并集，路由模型只决定发送参数。
@@ -1527,7 +1569,7 @@ function GenerationSettingsMenu(props: ComposerProps) {
     const imageSummary = [
         ...(mergedProfile.size.parameter !== "none" ? [referenceImageSizeSelected ? referenceImageSizeLabel : usesImageResolutionPicker ? formatImageResolutionSize(props.ratio, imageResolutionOptions) : props.ratio] : []),
         ...(props.imageProfile.quality.supported ? [qualityLabel] : []),
-		...(props.mode === "image" ? [props.count] : []),
+		...(props.mode === "image" ? [`${props.count} 张${props.seriesMode ? " · 系列" : ""}`] : []),
     ].join(" · ");
     const summary = props.mode === "video" ? [props.ratio, ...(videoResolutionSupported ? [videoResolutionLabel(props.videoQuality)] : [])].join(" · ") : imageSummary;
     const panel = <div className="creation-parameter-menu">
@@ -1535,7 +1577,22 @@ function GenerationSettingsMenu(props: ComposerProps) {
         {props.mode === "video" ? (videoResolutionSupported ? <SettingSection title="清晰度" value={videoResolutionLabel(props.videoQuality)}><div className="creation-choice-grid is-resolution">{resolutions.map((option) => <button key={option.value} type="button" aria-pressed={option.value === props.videoQuality} className={option.value === props.videoQuality ? "is-selected" : ""} onClick={() => props.setVideoQuality(option.value)}>{option.label}</button>)}</div></SettingSection> : null) : <>
             {imageResolutionChoiceOptions.length ? <SettingSection title="分辨率" value={activeImageResolutionChoice === "auto" ? "自动" : activeImageResolutionChoice.toUpperCase()}><div className="creation-choice-grid is-resolution">{imageResolutionChoiceOptions.map((choice) => <button key={choice} type="button" aria-pressed={choice === activeImageResolutionChoice} className={choice === activeImageResolutionChoice ? "is-selected" : ""} onClick={() => selectImageResolution(choice)}>{choice === "auto" ? "自动" : choice.toUpperCase()}</button>)}</div></SettingSection> : null}
             {props.imageProfile.quality.supported ? <SettingSection title={activeQualityOptions.some((item) => item.value === "1k" || item.value === "2k") ? "分辨率" : "图片质量"} value={qualityLabel}><div className="creation-choice-grid is-quality">{activeQualityOptions.map((option) => <button key={option.value} type="button" aria-pressed={option.value === props.quality} className={option.value === props.quality ? "is-selected" : ""} onClick={() => props.setQuality(option.value)}><span>{option.label}</span><small>{option.description}</small></button>)}</div></SettingSection> : null}
-			{props.mode === "image" ? <SettingSection title="批量生成数量" value={`${props.count} 张`}><div className="creation-parameter-content"><div className="creation-choice-grid is-count">{countOptions.filter((option) => Number(option) <= props.batchMaxCount).map((option) => <button key={option} type="button" aria-pressed={option === props.count} className={option === props.count ? "is-selected" : ""} onClick={() => props.setCount(option)}>{option}</button>)}</div><label className="creation-custom-value"><span>自定义</span><input inputMode="numeric" pattern="[0-9]*" value={props.count} onChange={(event) => props.setCount(String(Math.max(1, Math.min(props.batchMaxCount, Math.floor(Number(event.target.value)) || 1))))} aria-label={`批量生成数量，范围 1 到 ${props.batchMaxCount}`} /><em>张</em></label><p className="mt-2 text-xs text-foreground/55">最多创建 {props.batchMaxCount} 个持久任务，账号同时执行 {props.activeTaskLimit} 个；等待任务由后台自动续跑。</p></div></SettingSection> : null}
+			{props.mode === "image" ? <>
+				<SettingSection title="生成方式" value={props.seriesMode ? "系列" : "普通"}>
+					<div className="creation-choice-grid is-count">
+						<button type="button" aria-pressed={!props.seriesMode} className={!props.seriesMode ? "is-selected" : ""} onClick={() => props.setSeriesMode(false)}>普通生成</button>
+						<button type="button" aria-pressed={props.seriesMode} className={props.seriesMode ? "is-selected" : ""} onClick={() => props.setSeriesMode(true)}>系列生成</button>
+					</div>
+					<p className="mt-2 text-xs text-foreground/55">普通生成最多 {STANDARD_IMAGE_GENERATION_MAX} 张，结果作为独立素材；系列生成最多 {props.batchMaxCount} 张，结果按同一系列进入素材库。</p>
+				</SettingSection>
+				<SettingSection title="生成数量" value={`${props.count} 张`}>
+					<div className="creation-parameter-content">
+						<div className="creation-choice-grid is-count">{countOptions.filter((option) => Number(option) <= countLimit).map((option) => <button key={option} type="button" aria-pressed={option === props.count} className={option === props.count ? "is-selected" : ""} onClick={() => props.setCount(option)}>{option}</button>)}</div>
+						<label className="creation-custom-value"><span>自定义</span><input inputMode="numeric" pattern="[0-9]*" value={props.count} onChange={(event) => props.setCount(String(normalizeCreationImageCount(event.target.value, props.seriesMode, props.batchMaxCount)))} aria-label={`生成数量，范围 1 到 ${countLimit}`} /><em>张</em></label>
+						<p className="mt-2 text-xs text-foreground/55">{props.seriesMode ? `最多创建 ${props.batchMaxCount} 个持久任务，账号同时执行 ${props.activeTaskLimit} 个；等待任务由后台自动续跑。` : "普通生成不会自动合并成系列。"}</p>
+					</div>
+				</SettingSection>
+			</> : null}
         </>}
     </div>;
     return <Popover open={open} onOpenChange={setOpen} trigger="click" placement="bottom" arrow={false} classNames={{ root: "creation-control-popover", container: "creation-control-popover-surface", content: "creation-control-popover-content" }} content={panel}>
@@ -1850,7 +1907,7 @@ function attachCreationTaskContexts(tasks: GenerationTask[], conversations: Crea
     }
     return tasks.map((task) => {
         const context = contexts.get(task.id);
-        return context ? { ...task, prompt: context.prompt, clientContext: context.clientContext } : task;
+        return context ? { ...task, prompt: context.prompt, clientContext: { ...context.clientContext, ...task.clientContext } } : task;
     });
 }
 

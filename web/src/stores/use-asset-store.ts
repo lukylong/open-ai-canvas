@@ -3,6 +3,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { parseAssetStorageDocument, rebaseAssetSnapshot, serializeAssetStorageDocument, type AssetStorageDocument } from "@/lib/asset-storage-revision";
+import { browserCompatibleSha256Hex } from "@/lib/browser-compatible-sha256";
 import { parseCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -257,8 +258,7 @@ async function normalizePersistedAsset(asset: Asset): Promise<Asset> {
 }
 
 async function generationAssetId(effectKey: string) {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(effectKey));
-    return `generation_${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    return `generation_${await browserCompatibleSha256Hex(effectKey)}`;
 }
 
 export const useAssetStore = create<AssetStore>()(

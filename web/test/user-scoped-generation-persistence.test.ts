@@ -3692,7 +3692,7 @@ test("Canvas generation persistence preserves an explicit null previous active c
     }
 });
 
-test("Canvas generation persistence fails closed before durable writes when Web Locks are unavailable", async () => {
+test("Canvas generation persistence uses the compatible lease when Web Locks are unavailable", async () => {
     const originalWindow = (globalThis as { window?: unknown }).window;
     const originalDocument = (globalThis as { document?: unknown }).document;
     const originalNavigator = (globalThis as { navigator?: unknown }).navigator;
@@ -3753,16 +3753,16 @@ test("Canvas generation persistence fails closed before durable writes when Web 
     try {
         setActiveUserScope(scope);
         withCanvasStorePersistenceSuppressed(() => useCanvasStore.setState({ projects: [project] }));
-        await expect(
-            persistCanvasGenerationEffect({
-                projectId: project.id,
-                effectKey,
-                previousNodes: [baseNode],
-                nodes: [{ ...baseNode, metadata: { ...baseNode.metadata, content: "generated", generationEffectKeys: [effectKey] } }],
-            }),
-        ).rejects.toThrow("跨标签存储锁");
-        expect(canvasWrites).toBe(0);
-        expect(values.get(key)).not.toContain(effectKey);
+        const persisted = await persistCanvasGenerationEffect({
+            projectId: project.id,
+            effectKey,
+            previousNodes: [baseNode],
+            nodes: [{ ...baseNode, metadata: { ...baseNode.metadata, content: "generated", generationEffectKeys: [effectKey] } }],
+        });
+        expect(canvasWrites).toBeGreaterThan(0);
+        expect(persisted.nodes[0]?.metadata?.content).toBe("generated");
+        expect(values.get(key)).toContain(effectKey);
+        expect([...localStorageValues.keys()].some((storageKey) => storageKey.includes("compatible-browser-lock"))).toBe(false);
     } finally {
         setActiveUserScope(previousScope);
         withCanvasStorePersistenceSuppressed(() => useCanvasStore.setState({ projects: previousProjects }));

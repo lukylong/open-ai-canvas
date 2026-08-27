@@ -1,4 +1,5 @@
 import type { LocalRuntimeTransport } from "@/services/local-runtime";
+import { createClientId } from "@/lib/client-id";
 import { LocalRuntimeClientError, type LocalRuntimeConnection } from "@/services/local-runtime-session";
 import { getLocalRuntimeSessionClient } from "@/stores/use-local-runtime-store";
 import type { GenerationTaskEffectClaim, GenerationTaskEffectResult, GenerationTaskEffectStore } from "@/services/generation-task-materializer";
@@ -257,7 +258,7 @@ function parseEffectResult(value: unknown): GenerationTaskEffectResult {
 // Local CLI work goes straight to the signed Runtime; it must never create a backend task.
 export async function runLocalDreaminaGenerationTask(input: LocalDreaminaGenerationInput, dependencies: Dependencies = {}, signal?: AbortSignal): Promise<LocalDreaminaGenerationResult> {
     const parsed = parseInput(input);
-    const idempotencyKey = parsed.idempotencyKey ?? dependencies.idempotencyKey?.() ?? crypto.randomUUID();
+    const idempotencyKey = parsed.idempotencyKey ?? dependencies.idempotencyKey?.() ?? createClientId();
     validateTaskIdentity(idempotencyKey, parsed.mode);
     const client = dependencies.client ?? getLocalRuntimeSessionClient();
     let task = parsed.resumeOnly ? await queryLocalDreaminaGenerationTask(idempotencyKey, parsed.mode, { client }, signal) : await submitParsedTask(parsed, idempotencyKey, client, signal);

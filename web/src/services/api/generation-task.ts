@@ -1,4 +1,5 @@
 import { getMediaBlob } from "@/services/file-storage";
+import { createClientId } from "@/lib/client-id";
 import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { createGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
@@ -57,9 +58,10 @@ type BackendGenerationTaskOptions = {
     localResumeOnly?: boolean;
     clientOperationId?: string;
     retryOf?: string;
-    retryContextsByBatchIndex?: Array<{ retryOf: string; attemptGroupId: string; clientOperationId: string }>;
+	retryContextsByBatchIndex?: Array<{ retryOf: string; attemptGroupId: string; clientOperationId: string }>;
     attemptGroupId?: string;
 	onBatchUpdate?: (batch: TaskBatchDetail) => void;
+	seriesMode?: boolean;
 };
 
 export type GenerationTaskDependencies = {
@@ -75,7 +77,7 @@ const defaultDependencies: GenerationTaskDependencies = {
     createTask: createGenerationTask,
     waitTask: waitForGenerationTask,
     runLocal: (input, signal, onTaskUpdate) => runLocalDreaminaGenerationTask(input, { onTaskUpdate }, signal),
-    createId: () => crypto.randomUUID(),
+    createId: createClientId,
     now: () => new Date().toISOString(),
     ensureLocalDreaminaReady: (signal) => useLocalDreaminaModelStore.getState().ensureReady(signal),
 };
@@ -167,9 +169,12 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
     throwIfAborted(options.signal);
     assertClientPromptLimit(options.mode, options.prompt, options.config, options.metadata);
 	const logicalModelId = logicalModelIDForConfig(options.config);
+	const workflow = resolveGenerationWorkflowExecution(options.config, options.mode);
+	const requestConfig = resolveModelRequestConfig(options.config, options.config.model);
+	const persistentSeriesSupported = Boolean(logicalModelId || workflow?.provider === "comfyui-bridge" || requestConfig.channelId);
 	if (usesLocalDreamina(options.config)) {
 		const count = Math.min(15, requestedCount);
-		if (requestedCount > 15) throw new Error("本地即梦批量生成最多支持 15 个任务；1000 任务队列需要使用后台平台模型");
+		if (requestedCount > 15) throw new Error(options.seriesMode ? "本地即梦系列生成最多支持 15 个任务；超过 15 张需要使用后台平台模型" : "普通生成最多支持 15 张图片");
 		if (options.retryContextsByBatchIndex && options.retryContextsByBatchIndex.length !== count) throw new Error("生成重试批次任务数量不匹配");
         await dependencies.ensureLocalDreaminaReady?.(options.signal);
         throwIfAborted(options.signal);
@@ -191,7 +196,7 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
             }),
 		);
 	}
-	if (logicalModelId && requestedCount > 1) {
+	if (persistentSeriesSupported && requestedCount > 1) {
 		if (options.retryContextsByBatchIndex?.length) throw new Error("持久化批次请使用批次失败项重试，不支持整批覆盖重试");
 		const prepared = await prepareGenerationReferences(options);
 		throwIfAborted(options.signal);
@@ -211,7 +216,7 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
 		return taskBatchSettledResults(detail);
 	}
 	const count = Math.min(15, requestedCount);
-	if (requestedCount > 15) throw new Error("自定义渠道批量生成最多支持 15 个任务；1000 任务队列需要使用后台平台模型");
+	if (requestedCount > 15) throw new Error(options.seriesMode ? "当前系列生成需要使用后台平台模型，才能创建超过 15 张的持久任务队列" : "普通生成最多支持 15 张图片；请切换到系列生成后再提高数量");
 	if (options.retryContextsByBatchIndex && options.retryContextsByBatchIndex.length !== count) throw new Error("生成重试批次任务数量不匹配");
 	const prepared = await prepareGenerationReferences(options);
     throwIfAborted(options.signal);

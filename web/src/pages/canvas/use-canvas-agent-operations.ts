@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { applyCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { createGenerationRetryContext, type GenerationRetryContext } from "@/lib/canvas/canvas-project-generation";
+import { browserCompatibleSha256Hex } from "@/lib/browser-compatible-sha256";
 import { subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
 import { persistCanvasAgentGenerationContinuationEffect } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskAgent } from "@/services/project-asset-sync";
@@ -205,9 +206,8 @@ export async function consumeCanvasAgentGenerationContinuation(
 }
 
 async function canvasAgentGenerationContinuationId(nodeId: string, context?: CanvasAgentGenerationContext) {
-    const seed = new TextEncoder().encode(`canvas-agent-generation\0${context?.source || ""}\0${context?.conversationId || ""}\0${context?.messageId || ""}\0${nodeId}`);
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", seed));
-    return `agent:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    const seed = `canvas-agent-generation\0${context?.source || ""}\0${context?.conversationId || ""}\0${context?.messageId || ""}\0${nodeId}`;
+    return `agent:${await browserCompatibleSha256Hex(seed)}`;
 }
 
 export function useCanvasAgentOperations({

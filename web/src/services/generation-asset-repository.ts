@@ -1,10 +1,8 @@
+import { withBrowserCompatibleLock } from "@/services/browser-compatible-lock";
+
 export type GenerationAssetRecord = {
     id: string;
     metadata?: Record<string, unknown>;
-};
-
-type AsyncStorageLock = {
-    request<T>(name: string, callback: () => Promise<T>): Promise<T>;
 };
 
 type GenerationStorageLockOptions = {
@@ -47,12 +45,8 @@ function preserveHydratedPreview<TAsset extends GenerationAssetRecord>(persisted
 }
 
 function runWithBrowserStorageLock<T>(scope: string, operation: () => Promise<T>, options: GenerationStorageLockOptions) {
-    const locks = typeof window !== "undefined" && typeof navigator !== "undefined" ? (navigator.locks as AsyncStorageLock | undefined) : undefined;
-    if (locks) return locks.request(`${ASSET_STORAGE_LOCK_PREFIX}${scope}`, operation);
-    if (options.requireCrossRealmLock && typeof window !== "undefined" && typeof document !== "undefined") {
-        throw new Error("当前浏览器不支持跨标签存储锁，已停止生成素材持久化");
-    }
-    return operation();
+    void options;
+    return withBrowserCompatibleLock(`${ASSET_STORAGE_LOCK_PREFIX}${scope}`, operation);
 }
 
 export function withGenerationAssetStorageLock<T>(scope: string, operation: () => Promise<T>, options: GenerationStorageLockOptions = {}): Promise<T> {
@@ -74,12 +68,8 @@ export function withGenerationArtifactCommitLock<T>(scope: string, operation: ()
     const pending = previous
         .catch(() => undefined)
         .then(() => {
-            const locks = typeof window !== "undefined" && typeof navigator !== "undefined" ? (navigator.locks as AsyncStorageLock | undefined) : undefined;
-            if (locks) return locks.request(`${ARTIFACT_COMMIT_LOCK_PREFIX}${scope}`, operation);
-            if (options.requireCrossRealmLock && typeof window !== "undefined" && typeof document !== "undefined") {
-                throw new Error("当前浏览器不支持跨标签存储锁，已停止生成文件提交");
-            }
-            return operation();
+            void options;
+            return withBrowserCompatibleLock(`${ARTIFACT_COMMIT_LOCK_PREFIX}${scope}`, operation);
         });
     const tail = pending.then(
         () => undefined,

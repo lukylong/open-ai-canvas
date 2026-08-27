@@ -1,4 +1,5 @@
 import { type GenerationTask } from "@/services/api/task-center";
+import { browserCompatibleSha256Hex } from "@/lib/browser-compatible-sha256";
 import { backendProviderConfig, logicalModelIDForConfig, runBackendGenerationTask, type GenerationTaskDependencies } from "@/services/api/generation-task";
 import { configuredModelMatchesCapability, defaultConfig, normalizeModelOptionValue, normalizeRunningHubCapability, resolveModelRequestConfig, type AiConfig, type WorkflowFieldMapping } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
@@ -136,9 +137,7 @@ export type GenerationRetryContext = {
 };
 
 export async function createGenerationRetryContext(retryOf: string, attemptGroupId = retryOf): Promise<GenerationRetryContext> {
-    const bytes = new TextEncoder().encode(`generation-retry\0${attemptGroupId}\0${retryOf}`);
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-    const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const hex = await browserCompatibleSha256Hex(`generation-retry\0${attemptGroupId}\0${retryOf}`);
     return { retryOf, attemptGroupId, clientOperationId: `retry:${hex}` };
 }
 

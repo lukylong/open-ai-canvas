@@ -35,6 +35,62 @@ func TestCreateTaskBatchRejectsCountAboveRuntimePolicyBeforeCreatingRows(t *test
 	}
 }
 
+func TestTaskBatchTemplateOnlyAcceptsManagedRuntimeWithoutUserSecrets(t *testing.T) {
+	tests := []struct {
+		name    string
+		request CreateTaskRequest
+		wantErr bool
+	}{
+		{
+			name: "logical model",
+			request: CreateTaskRequest{Prompt: "test", LogicalModelID: "logical-image", Type: "canvas_image", Input: map[string]any{
+				"mode": "image", "config": map[string]any{"count": "1"},
+			}},
+		},
+		{
+			name: "system channel",
+			request: CreateTaskRequest{Prompt: "test", Type: "canvas_image", Input: map[string]any{
+				"mode": "image", "config": map[string]any{"channelId": "CHANNEL_000003", "apiKey": "system", "interfaceType": "openai-image"},
+			}},
+		},
+		{
+			name: "comfyui bridge",
+			request: CreateTaskRequest{Prompt: "test", Provider: "comfyui-bridge", Type: "canvas_image", Input: map[string]any{
+				"mode": "image", "config": map[string]any{"interfaceType": "comfyui-bridge-image", "apiKey": ""},
+			}},
+		},
+		{
+			name: "custom channel secret",
+			request: CreateTaskRequest{Prompt: "test", Type: "canvas_image", Input: map[string]any{
+				"mode": "image", "config": map[string]any{"baseUrl": "https://custom.example/v1", "apiKey": "plaintext-secret", "interfaceType": "openai-image"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "runninghub secret",
+			request: CreateTaskRequest{Prompt: "test", Provider: "runninghub", Type: "canvas_image", Input: map[string]any{
+				"mode": "image", "config": map[string]any{"interfaceType": "runninghub-workflow-image", "apiKey": "plaintext-secret"},
+			}},
+			wantErr: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input, err := normalizeTaskInput(test.request.Input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted := taskBatchTemplateUsesManagedRuntime(&test.request, input)
+			if test.wantErr && accepted {
+				t.Fatal("expected managed-runtime validation error")
+			}
+			if !test.wantErr && !accepted {
+				t.Fatal("managed runtime was rejected")
+			}
+		})
+	}
+}
+
 func TestTaskBatchItemStatusProjection(t *testing.T) {
 	for status, want := range map[model.TaskStatus]model.TaskBatchItemStatus{
 		model.TaskStatusQueued: model.TaskBatchItemStatusQueued, model.TaskStatusRunning: model.TaskBatchItemStatusRunning,
@@ -82,7 +138,7 @@ func TestTaskBatchPromotionHonorsActiveTaskLimitAndKeepsRemainingItemsWaiting(t 
 	channel := model.ModelChannel{ID: "batch-channel", Scope: model.ChannelScopeSystem, Enabled: true, Name: "Batch test", BaseURL: "https://example.com/v1", CreatedAt: now, UpdatedAt: now}
 	channelModel := model.ChannelModel{
 		ID: "batch-channel-model", ChannelID: channel.ID, ModelKey: "image-test", ProviderModelKey: "image-test", DisplayName: "Batch image",
-		Capability: "image", Protocol: model.ChannelInterfaceOpenAIImage, BillingMode: "fixed_request", Enabled: true,
+		Capability: "image", Protocol: model.ChannelInterfaceOpenAIImage, BillingMode: "fixed_request", PriceConfigured: true, Enabled: true,
 		CapabilityConfigJSON: string(capabilityConfigJSON), CapabilityVersion: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	revision := model.LogicalModelRevision{ID: "batch-revision", LogicalModelID: "batch-logical-model", Version: 1, CapabilitySpecJSON: string(capabilitySpecJSON), DefaultOptionsJSON: `{}`, CreatedAt: now}
@@ -132,5 +188,28 @@ func TestTaskBatchPromotionHonorsActiveTaskLimitAndKeepsRemainingItemsWaiting(t 
 		if task.BatchItemID == nil || task.BatchID != detail.Batch.ID || task.BatchIndex != index {
 			t.Fatalf("task %d linkage = %#v", index, task)
 		}
+	}
+
+	var capabilityConfigMap map[string]any
+	if err := json.Unmarshal(capabilityConfigJSON, &capabilityConfigMap); err != nil {
+		t.Fatal(err)
+	}
+	systemBatch, err := svc.CreateTaskBatch("user-1", CreateTaskBatchRequest{
+		Count: 2, IdempotencyKey: "system-channel-batch", Task: CreateTaskRequest{
+			Prompt: "system channel series", Type: "canvas_image", Operation: "image", Model: channelModel.ModelKey,
+			Input: map[string]any{
+				"mode": "image", "prompt": "system channel series",
+				"config": map[string]any{
+					"channelId": channel.ID, "apiKey": "system", "interfaceType": string(channelModel.Protocol),
+					"model": channelModel.ModelKey, "count": "1", "capabilityConfig": capabilityConfigMap,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("system channel batch was rejected: %v", err)
+	}
+	if systemBatch.Batch.RequestedCount != 2 || systemBatch.Batch.WaitingCount != 2 {
+		t.Fatalf("system channel batch = %#v", systemBatch.Batch)
 	}
 }

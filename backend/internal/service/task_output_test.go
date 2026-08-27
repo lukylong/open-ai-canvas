@@ -31,6 +31,34 @@ func TestTaskForOutputRedactsRoutingAndSecrets(t *testing.T) {
 	}
 }
 
+func TestTaskSummaryForOutputExposesPublicLogicalModelOnly(t *testing.T) {
+	task := model.Task{
+		ID:                     "task-1",
+		LogicalModelID:         "logical-model-1",
+		LogicalModelRevisionID: "revision-1",
+		RouteID:                "route-1",
+		ChannelModelID:         "channel-model-1",
+	}
+
+	output := taskSummaryForOutput(task)
+	if output.LogicalModelID != task.LogicalModelID {
+		t.Fatalf("logical model id missing from task summary: %+v", output)
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal task summary: %v", err)
+	}
+	var public map[string]any
+	if err := json.Unmarshal(encoded, &public); err != nil {
+		t.Fatalf("decode task summary: %v", err)
+	}
+	for _, protected := range []string{"logicalModelRevisionId", "routeId", "channelModelId"} {
+		if _, exists := public[protected]; exists {
+			t.Fatalf("protected routing field %q leaked: %s", protected, encoded)
+		}
+	}
+}
+
 func TestTaskMediaPreviewUsesSafeMediaURLs(t *testing.T) {
 	previewURL, previewKind := taskMediaPreview(`{"images":["data:image/png;base64,AAAA","/api/resources/resource-1/file"],"video":"https://cdn.example.com/output.mp4"}`, "video")
 	if previewURL != "/api/resources/resource-1/file" || previewKind != "image" {
@@ -42,8 +70,8 @@ func TestTaskMediaPreviewUsesSafeMediaURLs(t *testing.T) {
 }
 
 func TestTaskClientContextRequiresCreatePageMetadata(t *testing.T) {
-	valid := taskClientContext(`{"metadata":{"source":"create-page","conversationId":"conversation-1","messageId":"message-1","batchIndex":2,"batchCount":4}}`)
-	if valid == nil || valid.ConversationID != "conversation-1" || valid.BatchIndex != 2 {
+	valid := taskClientContext(`{"metadata":{"source":"create-page","conversationId":"conversation-1","messageId":"message-1","batchIndex":2,"batchCount":4,"seriesId":"creation-series:operation-1"}}`)
+	if valid == nil || valid.ConversationID != "conversation-1" || valid.BatchIndex != 2 || valid.SeriesID != "creation-series:operation-1" {
 		t.Fatalf("valid client context was not decoded: %+v", valid)
 	}
 	if context := taskClientContext(`{"metadata":{"source":"other","conversationId":"conversation-1","messageId":"message-1"}}`); context != nil {

@@ -44,6 +44,7 @@ export type GenerationTask = {
     operation?: string;
     provider?: string;
     model?: string;
+    logicalModelId?: string;
     providerRequestId?: string;
     providerCancelStatus?: ProviderCancelStatus;
     providerCancelError?: string;
@@ -76,6 +77,7 @@ export type GenerationTask = {
         nodeId?: string;
         batchIndex?: number;
         batchCount?: number;
+        seriesId?: string;
     };
     created_at?: string;
     updated_at?: string;

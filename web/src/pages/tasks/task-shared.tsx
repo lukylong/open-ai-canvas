@@ -83,6 +83,12 @@ export function formatModelName(config: AiConfig, task: GenerationTask) {
 
     // 工作流名称是任务快照，不属于模型渠道，不能交给模型展示名解析器再次映射成“系统模型”。
     if (task.provider === "runninghub" || task.provider === "comfyui-bridge") return raw || "工作流";
+    if (task.logicalModelId) {
+        const logicalModel = config.channels
+            .flatMap((channel) => channel.modelCosts || [])
+            .find((item) => item.logicalModelId === task.logicalModelId);
+        return logicalModel?.displayName?.trim() || model || "平台模型";
+    }
     if (!model) return "工作流";
     if (model === "version-router") return "版本对比工作流";
     if (model === "workflow-router") return "工作流路由";

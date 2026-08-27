@@ -1,5 +1,6 @@
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { getActiveUserScope } from "@/lib/user-scope";
+import { browserCompatibleSha256Hex } from "@/lib/browser-compatible-sha256";
 import { LocalRuntimeClientError } from "@/services/local-runtime-session";
 import type { LocalRuntimeTransport } from "@/services/local-runtime";
 import { getLocalRuntimeSessionClient, useLocalRuntimeStore } from "@/stores/use-local-runtime-store";
@@ -142,9 +143,7 @@ export async function deletePortraitTask(taskId: string, signal?: AbortSignal) {
 }
 
 export async function portraitOwnerScopeHash() {
-    const bytes = new TextEncoder().encode(getActiveUserScope());
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-    return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
+    return browserCompatibleSha256Hex(getActiveUserScope());
 }
 
 export async function imageNodeDataUrl(node: CanvasNodeData, signal?: AbortSignal): Promise<{ dataUrl: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; fileName: string }> {

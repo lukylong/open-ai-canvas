@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, shouldApplyExternalAssistantSessionState } from "../src/lib/canvas/canvas-assistant-dispatch";
+import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "../src/lib/canvas/canvas-assistant-dispatch";
 import { defaultConfig, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 import type { CanvasAssistantSession } from "../src/types/canvas";
 
@@ -81,6 +81,48 @@ describe("画布网站 Agent 发送链路", () => {
 
         expect(resolved.model).toBe("platform::managed-text");
         expect(resolved.textModel).toBe("platform::managed-text");
+    });
+
+    test("前台模型模式下把仍选中的个人文本渠道自动切换到平台逻辑模型", () => {
+        const config = systemTextConfig();
+        config.channels.push({
+            id: "custom",
+            name: "个人文本渠道",
+            baseUrl: "https://example.com/v1",
+            apiKey: "test-key",
+            apiFormat: "openai",
+            scope: "user",
+            models: ["custom-text"],
+            modelCosts: [{ model: "custom-text", capability: "text", billingMode: "fixed_request", unitPriceMicrocredits: 0 }],
+        });
+        config.model = "custom::custom-text";
+        config.textModel = "custom::custom-text";
+
+        expect(selectableOnlineAgentTextModels(config)).toEqual(["platform::managed-text"]);
+        const resolved = resolveOnlineAgentRequestConfig(config);
+        expect(resolved.model).toBe("platform::managed-text");
+        expect(resolved.textModel).toBe("platform::managed-text");
+    });
+
+    test("未开放前台模型时仍保留用户自己的文本渠道", () => {
+        const config = systemTextConfig();
+        config.channels[0]!.modelCosts = config.channels[0]!.modelCosts?.map((item) => ({ ...item, logicalModelId: undefined }));
+        config.channels.push({
+            id: "custom",
+            name: "个人文本渠道",
+            baseUrl: "https://example.com/v1",
+            apiKey: "test-key",
+            apiFormat: "openai",
+            scope: "user",
+            models: ["custom-text"],
+            modelCosts: [{ model: "custom-text", capability: "text", billingMode: "fixed_request", unitPriceMicrocredits: 0 }],
+        });
+        config.model = "custom::custom-text";
+        config.textModel = "custom::custom-text";
+
+        expect(selectableOnlineAgentTextModels(config)).toContain("custom::custom-text");
+        const resolved = resolveOnlineAgentRequestConfig(config);
+        expect(resolved.model).toBe("custom::custom-text");
     });
 
     test("没有可用逻辑文本路由时返回可见的配置错误", () => {
