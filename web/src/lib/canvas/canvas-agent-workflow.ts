@@ -193,7 +193,9 @@ function nodeSize(type: CanvasNodeType, kind: CanvasWorkflowNodeKind, width?: nu
 function workflowKindForNode(kind: CanvasWorkflowNodeKind): CanvasNodeMetadata["workflowKind"] {
     if (kind === "character_cards") return "character";
     if (kind === "character_three_view") return "character";
-    if (kind === "storyboard_video") return "storyboard";
+    // storyboard 是结构化分镜表，单个视频生成节点属于可执行镜头。
+    // 不能把普通视频节点标成 storyboard，否则短剧入口会把它误判为正式分镜。
+    if (kind === "storyboard_video") return "shot";
     if (kind === "script") return "script";
     return "free";
 }

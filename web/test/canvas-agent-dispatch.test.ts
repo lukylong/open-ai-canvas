@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "../src/lib/canvas/canvas-assistant-dispatch";
+import { CANVAS_AGENT_CONTEXT_TOOL, CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, expirePendingOnlineToolApprovals, isShortDramaWorkflowRequest, onlineAgentStepLimitSummary, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "../src/lib/canvas/canvas-assistant-dispatch";
 import { defaultConfig, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 import type { CanvasAssistantSession } from "../src/types/canvas";
 
@@ -146,6 +146,32 @@ describe("画布网站 Agent 发送链路", () => {
     test("明确创作请求仍进入正常工具选择", () => {
         expect(resolveOnlineAgentFirstToolChoice("按当前画风生成 8 个分镜")).toBe("required");
         expect(resolveOnlineAgentFirstToolChoice("把项目画风改成赛博朋克")).toBe("required");
+    });
+
+    test("创建短剧或漫剧工作流时先读取上下文而不是误走通用工作流", () => {
+        expect(isShortDramaWorkflowRequest("帮我搭建一个漫剧工作流")).toBe(true);
+        expect(resolveOnlineAgentFirstToolChoice("创建短剧分镜流程")).toEqual({ type: "function", name: CANVAS_AGENT_CONTEXT_TOOL });
+        expect(resolveOnlineAgentFirstToolChoice("创建电商图片流水线")).toBe("required");
+    });
+
+    test("新消息或刷新会让内存批准卡明确失效", () => {
+        const original = [session("chat", [{ id: "approval", role: "tool", title: "确认工具调用", text: "生成镜头", detail: { status: "pending", step: 2 } }])];
+        const expired = expirePendingOnlineToolApprovals(original, ["approval"], "新请求已开始", "2026-08-28T00:00:00.000Z");
+
+        expect(expired).not.toBe(original);
+        expect(expired[0]?.messages[0]).toMatchObject({ title: "工具批准已失效", text: "新请求已开始", detail: { status: "expired" } });
+        expect(expirePendingOnlineToolApprovals(expired)).toBe(expired);
+    });
+
+    test("工具轮次达到上限时返回清晰汇总而不是裸工具输出", () => {
+        const summary = onlineAgentStepLimitSummary([
+            { name: "canvas_get_context", result: { ok: true, message: "已读取上下文" } },
+            { name: "canvas_apply_ops", result: { ok: false, message: "画布 revision 已变化" } },
+        ], 6);
+
+        expect(summary).toContain("已执行 6 轮工具调用并停止继续调用");
+        expect(summary).toContain("成功 1 项，失败 1 项");
+        expect(summary).toContain("画布 revision 已变化");
     });
 
     test("未设置画风时返回项目画布和独立画布的可执行入口", () => {

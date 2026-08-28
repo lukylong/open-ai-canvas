@@ -34,7 +34,7 @@ import { canvasAgentPostconditionMessage, previewCanvasAgentOps, summarizeCanvas
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@/lib/canvas/canvas-agent-context";
 import { canvasAgentPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { resolveStoryboardGenerationContext } from "@/lib/canvas/canvas-storyboard-context";
-import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
+import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, expirePendingOnlineToolApprovals, onlineAgentStepLimitSummary, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
 import { createDirectorPromptProposal, selectDirectorPromptProposal, type DirectorPromptProposal } from "@/services/api/projects";
 import { buildSkillMentionReferences } from "@/lib/canvas/canvas-skill-mentions";
 import { buildCanvasWorkflowOps, looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@/lib/canvas/canvas-agent-workflow";
@@ -42,9 +42,9 @@ import { listAddedSkills, type Skill } from "@/services/api/skills";
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
-const ONLINE_AGENT_MAX_STEPS = 4;
+export const ONLINE_AGENT_MAX_STEPS = 6;
 const ONLINE_AGENT_PROMPT =
-    "你是影策网页内置在线画布助手。询问“怎么、如何、在哪里设置项目画风”等操作帮助时，首轮固定调用 canvas_get_project_style_guide，不得启动影视项目或生成分镜；其他请求首轮先调用 canvas_get_context。涉及已有节点时用 canvas_find_nodes 获取真实 id，涉及媒体参考时用 canvas_get_resources。流水线、工作流、管线、节点图或用户要求连线时，必须使用 canvas_create_workflow：把需求拆成有语义的节点类型、真实内容/提示词、边和布局，禁止退化成空文本卡片。复杂写操作先 canvas_validate_ops，再执行 canvas_apply_ops。任何写入后都必须检查工具返回的真实节点类型、connectionCount、overlapWarnings 和 verification；没有真实连线或资源时不得声称完成。只有用户明确要求创建影视项目、剧本、场景或分镜时才调用 canvas_create_cinematic_session。不要输出 JSON ops、不要猜 id、不要把未就绪资源当作可用素材、不要编造执行结果。需要用户选择时给出可点击短选项。用户提及技能时先用 canvas_get_skill 加载技能，再按技能契约执行。";
+    "你是影策网页内置在线画布助手。询问“怎么、如何、在哪里设置项目画风”等操作帮助时，首轮固定调用 canvas_get_project_style_guide，不得启动影视项目或生成分镜；其他请求首轮先调用 canvas_get_context。用户明确要创建短剧、漫剧、影视剧的项目、剧本、分镜或完整工作流时，读取上下文后必须调用 canvas_create_cinematic_session，禁止用 canvas_create_workflow 拼装角色卡、三视图和所谓分镜视频来冒充影视项目。canvas_create_workflow 只用于不属于短剧/漫剧项目的通用节点流水线。涉及已有节点时用 canvas_find_nodes 获取真实 id，涉及媒体参考时用 canvas_get_resources。通用流水线、工作流、管线、节点图或用户要求连线时，使用 canvas_create_workflow：把需求拆成有语义的节点类型、真实内容/提示词、边和布局，禁止退化成空文本卡片。复杂写操作先 canvas_validate_ops，再执行 canvas_apply_ops。任何写入后都必须检查工具返回的真实节点类型、connectionCount、overlapWarnings 和 verification；没有真实连线或资源时不得声称完成。不要输出 JSON ops、不要猜 id、不要把未就绪资源当作可用素材、不要编造执行结果。需要用户选择时给出可点击短选项。用户提及技能时先用 canvas_get_skill 加载技能，再按技能契约执行。";
 const JSON_RECORD_SCHEMA = { type: "object", additionalProperties: true };
 const POSITION_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"], additionalProperties: false };
 const VIEWPORT_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, k: { type: "number" } }, required: ["x", "y", "k"], additionalProperties: false };
@@ -140,7 +140,7 @@ const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     ),
     toolDefinition(
         "canvas_create_workflow",
-        "创建语义化工作流/流水线：节点使用真实的文本、脚本、图片、视频或音频类型；character_cards=角色拆分图片卡片，character_three_view=角色三视图，storyboard_video=分镜剧情视频。工具会自动生成唯一 id、按节点实际尺寸布局、创建 edges/referenceRefs/referenceNodeIds 连线、选择新节点并复核重叠。媒体节点必须提供有意义的 prompt 或 content；已有素材先 canvas_find_nodes/canvas_get_resources，再把真实 node id 放入 referenceNodeIds。不要用 canvas_create_text_nodes 代替工作流。",
+        "创建非短剧项目的语义化通用工作流/流水线：节点使用真实的文本、脚本、图片、视频或音频类型；character_cards=角色拆分图片卡片，character_three_view=角色三视图，storyboard_video=单个镜头视频。短剧、漫剧、影视剧的完整项目必须改用 canvas_create_cinematic_session。工具会自动生成唯一 id、按节点实际尺寸布局、创建 edges/referenceRefs/referenceNodeIds 连线、选择新节点并复核重叠。媒体节点必须提供有意义的 prompt 或 content；已有素材先 canvas_find_nodes/canvas_get_resources，再把真实 node id 放入 referenceNodeIds。不要用 canvas_create_text_nodes 代替工作流。",
         {
             title: { type: "string" },
             description: { type: "string" },
@@ -202,7 +202,7 @@ const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
         },
         ["items"],
     ),
-    toolDefinition("canvas_create_cinematic_session", "把自然语言创作指令提交给后端影视 Agent 会话，后端拆解为剧本、场景、分镜、镜头和成片节点，并返回可写回画布的操作。", { prompt: { type: "string" } }, ["prompt"]),
+    toolDefinition("canvas_create_cinematic_session", "创建短剧、漫剧或影视剧的正式项目工作流。后端会按领域结构拆解剧本、场景、项目画风、分镜、可执行镜头和成片节点，并返回可写回画布的操作。", { prompt: { type: "string" } }, ["prompt"]),
     toolDefinition(
         "canvas_create_image_prompt_flow",
         "创建提示词文本节点和图片目标节点并自动连线，可选择立即触发生图。",
@@ -388,7 +388,11 @@ export function CanvasAssistantPanel({
     const [onlineLogs, setOnlineLogs] = useState<OnlineAgentLog[]>([]);
     const [composerSkills, setComposerSkills] = useState<Skill[]>([]);
     const [removedReferenceIds, setRemovedReferenceIds] = useState<Set<string>>(new Set());
-    const [localSessions, setLocalSessions] = useState<CanvasAssistantSession[]>(() => (sessions.length ? sessions : [createSession()]));
+    const [localSessions, setLocalSessions] = useState<CanvasAssistantSession[]>(() => expirePendingOnlineToolApprovals(
+        sessions.length ? sessions : [createSession()],
+        undefined,
+        "页面已重新加载，旧批准上下文已失效，请重新发起操作。",
+    ));
     const localSessionsRef = useRef(localSessions);
     const [localActiveSessionId, setLocalActiveSessionIdState] = useState<string | null>(activeSessionId);
     const localActiveSessionIdRef = useRef(localActiveSessionId);
@@ -471,8 +475,9 @@ export function CanvasAssistantPanel({
             lastEmittedSessionStateRef.current,
         )) return;
         applyingExternalSessionsRef.current = true;
-        localSessionsRef.current = sessions;
-        setLocalSessions(sessions);
+        const restoredSessions = expirePendingOnlineToolApprovals(sessions, undefined, "会话状态已更新，旧批准上下文已失效，请重新发起操作。");
+        localSessionsRef.current = restoredSessions;
+        setLocalSessions(restoredSessions);
         setLocalActiveSessionId(activeSessionId);
     }, [activeSessionId, sessions]);
 
@@ -723,6 +728,20 @@ export function CanvasAssistantPanel({
             setLocalActiveSessionId(session.id);
         }
 
+        const pendingApprovalIds = Array.from(pendingToolContextRef.current.keys());
+        let requestHistory = history;
+        if (pendingApprovalIds.length) {
+            pendingToolContextRef.current.clear();
+            const nextSessions = expirePendingOnlineToolApprovals(
+                localSessionsRef.current,
+                pendingApprovalIds,
+                "已收到新的用户消息，上一轮批准已失效；新请求会基于当前画布重新规划。",
+            );
+            localSessionsRef.current = nextSessions;
+            setLocalSessions(nextSessions);
+            requestHistory = nextSessions.find((item) => item.id === session.id)?.messages || history;
+        }
+
         const refs = savedReferences || selectedReferences;
         const userMessage: CanvasAssistantMessage = { id: nanoid(), role: "user", text, references: refs };
         const assistantId = nanoid();
@@ -739,7 +758,7 @@ export function CanvasAssistantPanel({
             return;
         }
         setIsRunning(true);
-        void runOnlineAgentStep(session.id, assistantId, history, userMessage, { step: 1 });
+        void runOnlineAgentStep(session.id, assistantId, requestHistory, userMessage, { step: 1 });
     };
 
     const runOnlineAgentStep = async (sessionId: string, assistantId: string, history: CanvasAssistantMessage[], userMessage: CanvasAssistantMessage, loop: OnlineLoopContext) => {
@@ -755,13 +774,13 @@ export function CanvasAssistantPanel({
                 if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
             }, canvasAgentPromptCacheKey(sessionId), projectId);
             // Some upstreams reject an exact tool_choice and retry with auto. Keep
-            // help intent deterministic so it can never fall through to cinematic generation.
+            // deterministic first-step routing from silently selecting another tool.
             const result = typeof toolChoice === "object"
                 ? {
                     ...modelResult,
                     content: "",
                     toolCalls: [modelResult.toolCalls.find((call) => call.function.name === toolChoice.name) || {
-                        id: `style-guide-${nanoid()}`,
+                        id: `agent-required-${nanoid()}`,
                         type: "function" as const,
                         function: { name: toolChoice.name, arguments: "{}" },
                     }],
@@ -821,7 +840,7 @@ export function CanvasAssistantPanel({
     const continueOnlineToolLoopAfterResults = async (sessionId: string, assistantId: string, messages: ResponseInputMessage[], toolCalls: ResponseToolCall[], toolResults: OnlineExecutedToolCall[], step: number) => {
         const nextMessages: ResponseInputMessage[] = [...messages, ...toolCalls.map(toolCallToResponseInput), ...toolResults.map((item) => ({ role: "tool" as const, tool_call_id: item.toolCallId, content: JSON.stringify(item.result) }))];
         if (step >= ONLINE_AGENT_MAX_STEPS) {
-            upsertMessage(sessionId, { id: assistantId, role: "assistant", text: toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行。" });
+            upsertMessage(sessionId, { id: assistantId, role: "assistant", text: onlineAgentStepLimitSummary(toolResults, ONLINE_AGENT_MAX_STEPS) });
             addOnlineLog("Agent Tool Loop 达到步数上限", { maxSteps: ONLINE_AGENT_MAX_STEPS });
             return;
         }
@@ -984,6 +1003,11 @@ export function CanvasAssistantPanel({
         const pendingContext = claimOnlineToolApproval(pendingToolContextRef.current, onlineToolApprovalIdsRef.current, messageId);
         if (!pendingContext) {
             addOnlineLog("忽略重复批准", { messageId });
+            const nextSessions = expirePendingOnlineToolApprovals(localSessionsRef.current, [messageId]);
+            if (nextSessions !== localSessionsRef.current) {
+                localSessionsRef.current = nextSessions;
+                setLocalSessions(nextSessions);
+            }
             return;
         }
         const { toolCalls, messages: previousMessages, assistantId } = pendingContext;
@@ -2116,6 +2140,7 @@ function compactMetadata(metadata: CanvasNodeData["metadata"]) {
         workflowKind: metadata?.workflowKind,
         workflowTitle: metadata?.workflowTitle,
         workflowDescription: metadata?.workflowDescription,
+        referenceNodeIds: metadata?.referenceNodeIds,
         characterName: metadata?.characterName,
         characterAssetId: metadata?.characterAssetId,
         characterVersionId: metadata?.characterVersionId,

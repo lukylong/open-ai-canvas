@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { buildCanvasWorkflowOps, looksLikeWorkflowRequest } from "@/lib/canvas/canvas-agent-workflow";
 import { applyCanvasAgentOps, canvasAgentPostconditionMessage, verifyCanvasAgentOps, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { extractCanvasAgentQuickActions } from "@/components/canvas/canvas-agent-chat-ui";
+import { canvasAgentGenerationWaves, runCanvasAgentGenerationOps } from "@/pages/canvas/use-canvas-agent-operations";
 import { CanvasNodeType } from "@/types/canvas";
 
 const config = { imageModel: "image-model", videoModel: "video-model", audioModel: "audio-model" } as never;
@@ -21,6 +22,7 @@ describe("canvas agent workflow builder", () => {
         const after = applyCanvasAgentOps(snapshot, ops);
         const added = after.nodes.filter((node) => node.id.startsWith("agent-workflow-"));
         expect(added.map((node) => node.type)).toEqual([CanvasNodeType.Image, CanvasNodeType.Image, CanvasNodeType.Video]);
+        expect(added[2]?.metadata?.workflowKind).toBe("shot");
         expect(after.connections).toHaveLength(2);
         expect(added[1].position.x).toBeGreaterThan(added[0].position.x + added[0].width);
         expect(added[2].position.x).toBeGreaterThan(added[1].position.x + added[1].width);
@@ -79,5 +81,63 @@ describe("canvas agent workflow builder", () => {
         expect(after.connections).toHaveLength(1);
         expect(after.connections[0]).toMatchObject({ fromNodeId: "asset-1", toNodeId: ops[0].id });
         expect(after.nodes[1]?.metadata?.referenceNodeIds).toEqual(["asset-1"]);
+    });
+
+    it("schedules dependent generations in waves and keeps independent branches parallel", () => {
+        const nodes = [
+            { id: "character", type: CanvasNodeType.Image, title: "角色", position: { x: 0, y: 0 }, width: 320, height: 180, metadata: {} },
+            { id: "background", type: CanvasNodeType.Image, title: "背景", position: { x: 0, y: 240 }, width: 320, height: 180, metadata: {} },
+            { id: "shot", type: CanvasNodeType.Video, title: "镜头", position: { x: 440, y: 0 }, width: 320, height: 180, metadata: { referenceNodeIds: ["character", "background"] } },
+        ];
+        const ops = ["shot", "background", "character"].map((nodeId) => ({ type: "run_generation" as const, nodeId, mode: nodeId === "shot" ? "video" as const : "image" as const }));
+
+        expect(canvasAgentGenerationWaves(ops, nodes).map((wave) => wave.map((op) => op.nodeId).sort())).toEqual([
+            ["background", "character"],
+            ["shot"],
+        ]);
+    });
+
+    it("rejects cyclic generation dependencies before submitting a task", () => {
+        const nodes = [
+            { id: "a", type: CanvasNodeType.Image, title: "A", position: { x: 0, y: 0 }, width: 320, height: 180, metadata: { referenceNodeIds: ["b"] } },
+            { id: "b", type: CanvasNodeType.Image, title: "B", position: { x: 440, y: 0 }, width: 320, height: 180, metadata: { referenceNodeIds: ["a"] } },
+        ];
+        const ops = ["a", "b"].map((nodeId) => ({ type: "run_generation" as const, nodeId, mode: "image" as const }));
+
+        expect(() => canvasAgentGenerationWaves(ops, nodes)).toThrow("循环依赖");
+    });
+
+    it("waits for upstream generation completion before starting a dependent node", async () => {
+        const nodes = [
+            { id: "source", type: CanvasNodeType.Image, title: "角色图", position: { x: 0, y: 0 }, width: 320, height: 180, metadata: {} },
+            { id: "target", type: CanvasNodeType.Video, title: "镜头", position: { x: 440, y: 0 }, width: 320, height: 180, metadata: { referenceNodeIds: ["source"] } },
+        ];
+        let releaseSource!: () => void;
+        const sourceGate = new Promise<void>((resolve) => { releaseSource = resolve; });
+        let sourceStarted!: () => void;
+        const started = new Promise<void>((resolve) => { sourceStarted = resolve; });
+        const events: string[] = [];
+        const pending = runCanvasAgentGenerationOps({
+            generationOps: [
+                { type: "run_generation", nodeId: "target", mode: "video" },
+                { type: "run_generation", nodeId: "source", mode: "image" },
+            ],
+            nodes,
+            generate: async (nodeId) => {
+                events.push(`start:${nodeId}`);
+                if (nodeId === "source") {
+                    sourceStarted();
+                    await sourceGate;
+                }
+                events.push(`finish:${nodeId}`);
+            },
+        });
+
+        await started;
+        await Promise.resolve();
+        expect(events).toEqual(["start:source"]);
+        releaseSource();
+        await pending;
+        expect(events).toEqual(["start:source", "finish:source", "start:target", "finish:target"]);
     });
 });

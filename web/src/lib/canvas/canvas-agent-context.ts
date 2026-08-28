@@ -244,6 +244,7 @@ function compactNode(node: CanvasNodeData) {
         status: String(metadata.status || "idle"),
         content: preview(metadata.content, 240),
         prompt: preview(metadata.prompt || metadata.composerContent, 300),
+        referenceNodeIds: Array.isArray(metadata.referenceNodeIds) ? metadata.referenceNodeIds.filter((id): id is string => typeof id === "string") : undefined,
         generation: metadata.generationMode || metadata.workflowKind || metadata.taskId ? { mode: metadata.generationMode, model: metadata.model, workflowKind: metadata.workflowKind, workflowTitle: metadata.workflowTitle, taskId: metadata.taskId, status: metadata.taskStatus || metadata.status, progress: numberValue(metadata.taskProgress ?? metadata.progress), stage: metadata.taskStage, provider: metadata.taskProvider, errorCode: metadata.taskErrorCode || metadata.generationErrorCode } : undefined,
         error: metadata.status === "error" ? preview(metadata.errorDetails || metadata.generationErrorCode, 360) : undefined,
         asset: metadata.assetId || metadata.characterAssetId ? { assetId: metadata.assetId || metadata.characterAssetId, versionId: metadata.characterVersionId, category: metadata.assetCategory, tags: metadata.assetTags, characterName: metadata.characterName } : undefined,

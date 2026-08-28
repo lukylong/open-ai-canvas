@@ -258,6 +258,8 @@ export type CanvasNodeMetadata = {
     sceneId?: string;
     characterIds?: string[];
     referenceSetId?: string;
+    /** 通用工作流节点的直接上游依赖；用于 Agent DAG 调度，不替代分镜表内部引用。 */
+    referenceNodeIds?: string[];
     referenceAssetNodeIds?: string[];
     assetBindings?: StoryboardAssetBinding[];
     characterName?: string;

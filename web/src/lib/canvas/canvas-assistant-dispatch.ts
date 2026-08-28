@@ -1,5 +1,5 @@
 import { logicalModelIDForConfig, resolveModelChannel, selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
-import type { CanvasAssistantSession } from "@/types/canvas";
+import type { CanvasAssistantMessage, CanvasAssistantSession } from "@/types/canvas";
 
 type AssistantSessionState = { sessions: CanvasAssistantSession[]; activeSessionId: string | null };
 type CanvasStyleGuideNode = {
@@ -13,6 +13,7 @@ type CanvasStyleGuideNode = {
 };
 
 export const CANVAS_PROJECT_STYLE_GUIDE_TOOL = "canvas_get_project_style_guide";
+export const CANVAS_AGENT_CONTEXT_TOOL = "canvas_get_context";
 
 export function claimOnlineToolApproval<T>(pendingContexts: Map<string, T>, inFlightIds: Set<string>, messageId: string): T | null {
     if (inFlightIds.has(messageId)) return null;
@@ -23,11 +24,60 @@ export function claimOnlineToolApproval<T>(pendingContexts: Map<string, T>, inFl
     return context;
 }
 
-export function resolveOnlineAgentFirstToolChoice(text: string): "required" | { type: "function"; name: typeof CANVAS_PROJECT_STYLE_GUIDE_TOOL } {
+export function isShortDramaWorkflowRequest(text: string) {
+    const normalized = text.replace(/\s+/g, "");
+    const mentionsShortDrama = /(短剧|漫剧|影视剧|分镜剧|条漫剧)/.test(normalized);
+    const requestsCreation = /(创建|新建|搭建|生成|制作|设计|规划)/.test(normalized);
+    const mentionsWorkflow = /(工作流|流程|流水线|项目|剧本|分镜)/.test(normalized);
+    return mentionsShortDrama && requestsCreation && mentionsWorkflow;
+}
+
+export function resolveOnlineAgentFirstToolChoice(text: string): "required" | { type: "function"; name: typeof CANVAS_PROJECT_STYLE_GUIDE_TOOL | typeof CANVAS_AGENT_CONTEXT_TOOL } {
     const normalized = text.replace(/\s+/g, "");
     const asksHow = /(怎么|怎样|如何|在哪|哪里|何处|入口|步骤|方法|教我)/.test(normalized);
     const mentionsProjectStyle = /(项目画风|画风|视觉风格)/.test(normalized);
-    return asksHow && mentionsProjectStyle ? { type: "function", name: CANVAS_PROJECT_STYLE_GUIDE_TOOL } : "required";
+    if (asksHow && mentionsProjectStyle) return { type: "function", name: CANVAS_PROJECT_STYLE_GUIDE_TOOL };
+    // 短剧/漫剧项目必须先读取真实画布上下文，下一轮再进入后端影视会话；
+    // 避免模型首轮误用通用工作流，创建一组没有领域语义的媒体占位节点。
+    if (isShortDramaWorkflowRequest(text)) return { type: "function", name: CANVAS_AGENT_CONTEXT_TOOL };
+    return "required";
+}
+
+export function expirePendingOnlineToolApprovals(
+    sessions: CanvasAssistantSession[],
+    ids?: Iterable<string>,
+    reason = "批准上下文已失效，请根据当前画布重新发起操作。",
+    expiredAt = new Date().toISOString(),
+) {
+    const selectedIds = ids ? new Set(ids) : null;
+    let changed = false;
+    const next = sessions.map((session) => {
+        let sessionChanged = false;
+        const messages = session.messages.map((message): CanvasAssistantMessage => {
+            if (message.role !== "tool" || (message.detail as { status?: unknown } | undefined)?.status !== "pending" || (selectedIds && !selectedIds.has(message.id))) return message;
+            changed = true;
+            sessionChanged = true;
+            return {
+                ...message,
+                title: "工具批准已失效",
+                text: reason,
+                detail: { ...(message.detail as Record<string, unknown>), status: "expired", expiredAt },
+            };
+        });
+        return sessionChanged ? { ...session, messages, updatedAt: expiredAt } : session;
+    });
+    return changed ? next : sessions;
+}
+
+export function onlineAgentStepLimitSummary(results: Array<{ name: string; result: { ok: boolean; message: string } }>, maxSteps: number) {
+    const succeeded = results.filter((item) => item.result.ok);
+    const failed = results.filter((item) => !item.result.ok);
+    const lastMessages = results.map((item) => item.result.message.trim()).filter(Boolean).slice(-3);
+    return [
+        `已执行 ${maxSteps} 轮工具调用并停止继续调用，避免任务循环。`,
+        `本轮成功 ${succeeded.length} 项，失败 ${failed.length} 项。`,
+        lastMessages.length ? `最后结果：${lastMessages.join("；")}` : "最后结果：工具已执行。",
+    ].join("\n");
 }
 
 export function projectStyleSetupGuide(nodes: CanvasStyleGuideNode[]) {

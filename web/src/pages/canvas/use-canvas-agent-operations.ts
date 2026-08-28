@@ -61,6 +61,7 @@ type CanvasAgentUndoBatch = { snapshot: CanvasAgentSnapshot; afterNodes: CanvasN
 type RunCanvasAgentGenerationOpsInput = {
     generationOps: Array<Extract<CanvasAgentOp, { type: "run_generation" }>>;
     nodes: CanvasNodeData[];
+    connections?: CanvasConnection[];
     context?: CanvasAgentGenerationContext;
     generate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options: CanvasAgentGenerationOptions) => Promise<void>;
     subscribeTasks?: (ids: readonly string[], listener: (task: GenerationTask) => void) => () => void;
@@ -72,6 +73,7 @@ type RunCanvasAgentGenerationOpsInput = {
 export async function runCanvasAgentGenerationOps({
     generationOps,
     nodes,
+    connections = [],
     context,
     generate,
     subscribeTasks = subscribeGenerationTasks,
@@ -138,39 +140,73 @@ export async function runCanvasAgentGenerationOps({
         return;
     }
 
-    await Promise.all(
-        generationOps.map(async (op) => {
-            const target = nodes.find((node) => node.id === op.nodeId);
-            const prompt = op.prompt?.trim() ? op.prompt : (target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
-            const retryOf = op.retry ? target?.metadata?.taskId : undefined;
-            if (op.retry && !retryOf) throw new Error("当前节点没有可重试的生成任务");
-            const retryContext = retryOf ? await createGenerationRetryContext(retryOf, target?.metadata?.attemptGroupId) : undefined;
-            const continuationIdPromise = canvasAgentGenerationContinuationId(op.nodeId, context);
-            let observation: Promise<void> | undefined;
-            let continuationTaskId = "";
-            const generationPromise = generate(op.nodeId, op.mode || target?.metadata?.generationMode || "image", prompt, {
-                context: context ? { conversationId: context.conversationId, messageId: context.messageId } : undefined,
-                ...(retryContext ? { retryContext } : {}),
-                onTaskUpdate: (task) => {
-                    if (continuationTaskId) return;
-                    continuationTaskId = task.id;
-                    observation = observe(task.id, op.nodeId, continuationIdPromise);
-                    void continuationIdPromise.then((continuationId) => {
-                        onContinuation?.(op.nodeId, {
-                            id: continuationId,
-                            taskId: task.id,
-                            ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
-                            ...(context?.messageId ? { messageId: context.messageId } : {}),
-                            ...(context?.source ? { source: context.source } : {}),
-                            status: "pending",
+    const waves = canvasAgentGenerationWaves(generationOps, nodes, connections);
+    for (const wave of waves) {
+        await Promise.all(
+            wave.map(async (op) => {
+                const target = nodes.find((node) => node.id === op.nodeId);
+                const prompt = op.prompt?.trim() ? op.prompt : (target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
+                const retryOf = op.retry ? target?.metadata?.taskId : undefined;
+                if (op.retry && !retryOf) throw new Error("当前节点没有可重试的生成任务");
+                const retryContext = retryOf ? await createGenerationRetryContext(retryOf, target?.metadata?.attemptGroupId) : undefined;
+                const continuationIdPromise = canvasAgentGenerationContinuationId(op.nodeId, context);
+                let observation: Promise<void> | undefined;
+                let continuationTaskId = "";
+                const generationPromise = generate(op.nodeId, op.mode || target?.metadata?.generationMode || "image", prompt, {
+                    context: context ? { conversationId: context.conversationId, messageId: context.messageId } : undefined,
+                    ...(retryContext ? { retryContext } : {}),
+                    onTaskUpdate: (task) => {
+                        if (continuationTaskId) return;
+                        continuationTaskId = task.id;
+                        observation = observe(task.id, op.nodeId, continuationIdPromise);
+                        void continuationIdPromise.then((continuationId) => {
+                            onContinuation?.(op.nodeId, {
+                                id: continuationId,
+                                taskId: task.id,
+                                ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+                                ...(context?.messageId ? { messageId: context.messageId } : {}),
+                                ...(context?.source ? { source: context.source } : {}),
+                                status: "pending",
+                            });
                         });
-                    });
-                },
-            });
-            await generationPromise;
-            if (observation) await observation;
-        }),
-    );
+                    },
+                });
+                await generationPromise;
+                if (observation) await observation;
+            }),
+        );
+    }
+}
+
+export function canvasAgentGenerationWaves(
+    generationOps: Array<Extract<CanvasAgentOp, { type: "run_generation" }>>,
+    nodes: CanvasNodeData[],
+    connections: CanvasConnection[] = [],
+) {
+    const opByNodeId = new Map<string, Extract<CanvasAgentOp, { type: "run_generation" }>>();
+    for (const op of generationOps) {
+        if (opByNodeId.has(op.nodeId)) throw new Error(`节点「${op.nodeId}」存在重复生成操作`);
+        opByNodeId.set(op.nodeId, op);
+    }
+    const dependencies = new Map<string, Set<string>>();
+    for (const op of generationOps) {
+        const node = nodes.find((item) => item.id === op.nodeId);
+        const candidates = new Set([
+            ...(node?.metadata?.referenceNodeIds || []),
+            ...connections.filter((connection) => connection.toNodeId === op.nodeId).map((connection) => connection.fromNodeId),
+        ]);
+        dependencies.set(op.nodeId, new Set(Array.from(candidates).filter((id) => opByNodeId.has(id))));
+    }
+
+    const pending = new Set(opByNodeId.keys());
+    const waves: Array<Array<Extract<CanvasAgentOp, { type: "run_generation" }>>> = [];
+    while (pending.size) {
+        const ready = Array.from(pending).filter((nodeId) => Array.from(dependencies.get(nodeId) || []).every((dependencyId) => !pending.has(dependencyId)));
+        if (!ready.length) throw new Error("生成工作流包含循环依赖，已停止提交任务");
+        waves.push(ready.map((nodeId) => opByNodeId.get(nodeId)!));
+        ready.forEach((nodeId) => pending.delete(nodeId));
+    }
+    return waves;
 }
 
 export async function consumeCanvasAgentGenerationContinuation(
@@ -293,6 +329,7 @@ export function useCanvasAgentOperations({
                     await runCanvasAgentGenerationOps({
                         generationOps,
                         nodes: nodesRef.current,
+                        connections: connectionsRef.current,
                         generate,
                         context: generationContext,
                         onContinuation: async (nodeId, continuation) => {
