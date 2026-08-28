@@ -1,4 +1,4 @@
-import { logicalModelIDForConfig, resolveModelChannel, selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
+import { logicalModelIDForConfig, PUBLIC_MODEL_CATALOG_ID, resolveModelChannel, selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasAssistantMessage, CanvasAssistantSession } from "@/types/canvas";
 
 type AssistantSessionState = { sessions: CanvasAssistantSession[]; activeSessionId: string | null };
@@ -14,6 +14,14 @@ type CanvasStyleGuideNode = {
 
 export const CANVAS_PROJECT_STYLE_GUIDE_TOOL = "canvas_get_project_style_guide";
 export const CANVAS_AGENT_CONTEXT_TOOL = "canvas_get_context";
+
+export function isOnlineAgentResetReply(text: string) {
+    return /^(?:<reset>|<\|reset\|>)$/i.test(text.trim());
+}
+
+export function onlineAgentReplyText(text: string) {
+    return isOnlineAgentResetReply(text) ? "" : text.trim();
+}
 
 export function claimOnlineToolApproval<T>(pendingContexts: Map<string, T>, inFlightIds: Set<string>, messageId: string): T | null {
     if (inFlightIds.has(messageId)) return null;
@@ -106,27 +114,30 @@ export function shouldApplyExternalAssistantSessionState(incoming: AssistantSess
 
 export function selectableOnlineAgentTextModels(config: AiConfig) {
     const candidates = selectableModelsByCapability(config, "text");
+    const managedCatalogEnabled = config.channels.some((channel) => channel.id === PUBLIC_MODEL_CATALOG_ID && channel.scope === "system" && channel.enabled !== false);
+    if (!managedCatalogEnabled) return candidates;
     const managed = candidates.filter((model) => {
         const candidate = { ...config, model };
         return resolveModelChannel(candidate, model).scope === "system" && Boolean(logicalModelIDForConfig(candidate));
     });
-    // 只要目录中已经出现平台逻辑模型，就说明后端已切换到前台模型模式。
-    // 此模式下任务入口拒绝无 logicalModelId 的个人/旧系统渠道，所以 Agent
-    // 下拉和自动回退必须收敛到同一组可提交模型，避免把无效选择送到后端。
-    return managed.length ? managed : candidates;
+    // managed 渠道是前台逻辑模型模式的明确标识。此模式下任务入口拒绝
+    // 无 logicalModelId 的个人渠道，所以 Agent 下拉必须与后端提交合同一致。
+    return managed;
 }
 
 export function resolveOnlineAgentRequestConfig(config: AiConfig) {
     const selectedModel = config.textModel || config.model;
     const selectedConfig = { ...config, model: selectedModel };
-    const selectedChannel = resolveModelChannel(selectedConfig, selectedModel);
     if (logicalModelIDForConfig(selectedConfig)) return selectedConfig;
+    const managedCatalogEnabled = config.channels.some((channel) => channel.id === PUBLIC_MODEL_CATALOG_ID && channel.scope === "system" && channel.enabled !== false);
+    // 系统渠道目录模式使用 channelId + model 由后端验证和路由，不携带
+    // logicalModelId。不能把它误判成前台逻辑模型配置缺失。
+    if (!managedCatalogEnabled) return selectedConfig;
 
     const fallbackModel = selectableOnlineAgentTextModels(config).find((model) => {
         const candidate = { ...config, model };
         return resolveModelChannel(candidate, model).scope === "system" && Boolean(logicalModelIDForConfig(candidate));
     });
     if (fallbackModel) return { ...config, model: fallbackModel, textModel: fallbackModel };
-    if (selectedChannel.scope !== "system") return selectedConfig;
     throw new Error("当前网站 Agent 文本模型未绑定可用的平台逻辑模型，请在输入框左下角重新选择已启用的文本模型。");
 }

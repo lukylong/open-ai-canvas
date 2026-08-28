@@ -34,7 +34,7 @@ import { canvasAgentPostconditionMessage, previewCanvasAgentOps, summarizeCanvas
 import { buildCanvasAgentContext, findCanvasAgentNodes, getCanvasAgentConnection, getCanvasAgentGenerationTasks, getCanvasAgentNode, getCanvasAgentResources, validateCanvasAgentOps } from "@/lib/canvas/canvas-agent-context";
 import { canvasAgentPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { resolveStoryboardGenerationContext } from "@/lib/canvas/canvas-storyboard-context";
-import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, expirePendingOnlineToolApprovals, onlineAgentStepLimitSummary, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
+import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, expirePendingOnlineToolApprovals, isOnlineAgentResetReply, onlineAgentReplyText, onlineAgentStepLimitSummary, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
 import { createDirectorPromptProposal, selectDirectorPromptProposal, type DirectorPromptProposal } from "@/services/api/projects";
 import { buildSkillMentionReferences } from "@/lib/canvas/canvas-skill-mentions";
 import { buildCanvasWorkflowOps, looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@/lib/canvas/canvas-agent-workflow";
@@ -691,7 +691,11 @@ export function CanvasAssistantPanel({
             return;
         }
         const session = createSession();
-        setLocalSessions((prev) => [session, ...prev]);
+        // appendMessage/updateSession 从 ref 读取最新会话；只更新 React state 会让
+        // 用户紧接着发送的第一条消息落到一个尚不存在于 ref 的会话并静默丢失。
+        const next = [session, ...localSessionsRef.current];
+        localSessionsRef.current = next;
+        setLocalSessions(next);
         setLocalActiveSessionId(session.id);
     };
 
@@ -699,9 +703,11 @@ export function CanvasAssistantPanel({
         const next = safeSessions.filter((session) => !ids.includes(session.id));
         if (!next.length) {
             const session = createSession();
+            localSessionsRef.current = [session];
             setLocalSessions([session]);
             setLocalActiveSessionId(session.id);
         } else {
+            localSessionsRef.current = next;
             setLocalSessions(next);
             setLocalActiveSessionId(localActiveSessionId && ids.includes(localActiveSessionId) ? next[0].id : localActiveSessionId);
         }
@@ -710,6 +716,7 @@ export function CanvasAssistantPanel({
 
     const clearSessions = () => {
         const session = createSession();
+        localSessionsRef.current = [session];
         setLocalSessions([session]);
         setLocalActiveSessionId(session.id);
         void cleanupImages({ sessions: [session] });
@@ -724,6 +731,7 @@ export function CanvasAssistantPanel({
 
         const session = activeSession || createSession();
         if (!activeSession) {
+            localSessionsRef.current = [session];
             setLocalSessions([session]);
             setLocalActiveSessionId(session.id);
         }
@@ -790,7 +798,7 @@ export function CanvasAssistantPanel({
             if (result.toolCalls.length) {
                 const writableCalls = result.toolCalls.filter(isWritableToolCall);
                 if (confirmTools && writableCalls.length) {
-                    upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || streamed || "准备执行工具，等待确认。" });
+                    upsertMessage(sessionId, { id: assistantId, role: "assistant", text: onlineAgentReplyText(result.content || streamed) || "准备执行工具，等待确认。" });
                     const toolMessageId = nanoid();
                     pendingToolContextRef.current.set(toolMessageId, { messages, toolCalls: result.toolCalls, assistantId, step: loop.step });
                     const toolMessage: CanvasAssistantMessage = {
@@ -806,8 +814,9 @@ export function CanvasAssistantPanel({
                 }
                 await continueOnlineToolLoop(sessionId, assistantId, messages, result, loop.step);
             } else {
-                if (!result.content.trim()) throw new Error("模型没有返回工具调用，画布操作未执行。");
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || streamed || "没有返回内容。" });
+                const reply = onlineAgentReplyText(result.content || streamed);
+                if (!reply) throw new Error("模型没有返回工具调用，画布操作未执行。");
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: reply });
                 addOnlineLog(`Agent Tool Loop ${loop.step} 结束`, { reply: result.content });
             }
         } catch (error) {
@@ -854,7 +863,7 @@ export function CanvasAssistantPanel({
         if (next.toolCalls.length) {
             const writableCalls = next.toolCalls.filter(isWritableToolCall);
             if (confirmTools && writableCalls.length) {
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || streamed || "准备执行工具，等待确认。" });
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: onlineAgentReplyText(next.content || streamed) || "准备执行工具，等待确认。" });
                 const toolMessageId = nanoid();
                 pendingToolContextRef.current.set(toolMessageId, { messages: nextMessages, toolCalls: next.toolCalls, assistantId, step: step + 1 });
                 appendMessage(sessionId, {
@@ -870,7 +879,7 @@ export function CanvasAssistantPanel({
             await continueOnlineToolLoop(sessionId, assistantId, nextMessages, next, step + 1);
             return;
         }
-        upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || streamed || toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行。" });
+        upsertMessage(sessionId, { id: assistantId, role: "assistant", text: onlineAgentReplyText(next.content || streamed) || toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行。" });
     };
 
     const executeOps = async (ops: CanvasAgentOp[], context?: { conversationId?: string; messageId?: string; source?: "online" | "local" }) => {
@@ -1838,11 +1847,17 @@ function toolCallToResponseInput(call: ResponseToolCall): ResponseInputMessage {
 }
 
 async function requestOnlineAgentModel(config: AiConfig, messages: ResponseInputMessage[], toolChoice: ToolChoice, prompt: string, onDelta: (text: string) => void, promptCacheKey: string | undefined, projectId: string) {
-    if (backendModelRuntimeRequired(config)) {
-        const result = await runBackendToolGenerationTask({ projectId, prompt, config, messages, tools: ONLINE_AGENT_TOOLS, toolChoice, onDelta });
-        return result;
-    }
-    return requestToolResponse(config, messages, ONLINE_AGENT_TOOLS, toolChoice, onDelta, { promptCacheKey });
+    const request = () => {
+        if (backendModelRuntimeRequired(config)) {
+            return runBackendToolGenerationTask({ projectId, prompt, config, messages, tools: ONLINE_AGENT_TOOLS, toolChoice, onDelta });
+        }
+        return requestToolResponse(config, messages, ONLINE_AGENT_TOOLS, toolChoice, onDelta, { promptCacheKey });
+    };
+    let result = await request();
+    // 部分兼容渠道会偶发把内部控制标记作为成功文本返回。它在 Markdown
+    // 中不可见，会让用户误以为 Agent 卡住；同一轮仅重试一次，避免循环。
+    if (!result.toolCalls.length && isOnlineAgentResetReply(result.content)) result = await request();
+    return result;
 }
 
 function summarizeToolCalls(calls: ResponseToolCall[]) {

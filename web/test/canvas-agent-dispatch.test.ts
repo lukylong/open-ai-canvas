@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { CANVAS_AGENT_CONTEXT_TOOL, CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, expirePendingOnlineToolApprovals, isShortDramaWorkflowRequest, onlineAgentStepLimitSummary, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "../src/lib/canvas/canvas-assistant-dispatch";
-import { defaultConfig, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
+import { CANVAS_AGENT_CONTEXT_TOOL, CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, expirePendingOnlineToolApprovals, isOnlineAgentResetReply, isShortDramaWorkflowRequest, onlineAgentReplyText, onlineAgentStepLimitSummary, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "../src/lib/canvas/canvas-assistant-dispatch";
+import { defaultConfig, PUBLIC_MODEL_CATALOG_ID, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 import type { CanvasAssistantSession } from "../src/types/canvas";
 
 function session(id: string, messages: CanvasAssistantSession["messages"]): CanvasAssistantSession {
@@ -16,7 +16,7 @@ function session(id: string, messages: CanvasAssistantSession["messages"]): Canv
 
 function systemTextConfig(): AiConfig {
     const channel: ModelChannel = {
-        id: "platform",
+        id: PUBLIC_MODEL_CATALOG_ID,
         name: "平台文本模型",
         baseUrl: "/api",
         apiKey: "system",
@@ -31,10 +31,10 @@ function systemTextConfig(): AiConfig {
     return {
         ...defaultConfig,
         channels: [channel],
-        models: ["platform::legacy-text", "platform::managed-text"],
-        textModels: ["platform::legacy-text", "platform::managed-text"],
-        model: "platform::legacy-text",
-        textModel: "platform::legacy-text",
+        models: [`${PUBLIC_MODEL_CATALOG_ID}::legacy-text`, `${PUBLIC_MODEL_CATALOG_ID}::managed-text`],
+        textModels: [`${PUBLIC_MODEL_CATALOG_ID}::legacy-text`, `${PUBLIC_MODEL_CATALOG_ID}::managed-text`],
+        model: `${PUBLIC_MODEL_CATALOG_ID}::legacy-text`,
+        textModel: `${PUBLIC_MODEL_CATALOG_ID}::legacy-text`,
     };
 }
 
@@ -79,8 +79,8 @@ describe("画布网站 Agent 发送链路", () => {
     test("旧的平台文本 SKU 自动切换到已绑定逻辑模型的文本路由", () => {
         const resolved = resolveOnlineAgentRequestConfig(systemTextConfig());
 
-        expect(resolved.model).toBe("platform::managed-text");
-        expect(resolved.textModel).toBe("platform::managed-text");
+        expect(resolved.model).toBe(`${PUBLIC_MODEL_CATALOG_ID}::managed-text`);
+        expect(resolved.textModel).toBe(`${PUBLIC_MODEL_CATALOG_ID}::managed-text`);
     });
 
     test("前台模型模式下把仍选中的个人文本渠道自动切换到平台逻辑模型", () => {
@@ -98,14 +98,15 @@ describe("画布网站 Agent 发送链路", () => {
         config.model = "custom::custom-text";
         config.textModel = "custom::custom-text";
 
-        expect(selectableOnlineAgentTextModels(config)).toEqual(["platform::managed-text"]);
+        expect(selectableOnlineAgentTextModels(config)).toEqual([`${PUBLIC_MODEL_CATALOG_ID}::managed-text`]);
         const resolved = resolveOnlineAgentRequestConfig(config);
-        expect(resolved.model).toBe("platform::managed-text");
-        expect(resolved.textModel).toBe("platform::managed-text");
+        expect(resolved.model).toBe(`${PUBLIC_MODEL_CATALOG_ID}::managed-text`);
+        expect(resolved.textModel).toBe(`${PUBLIC_MODEL_CATALOG_ID}::managed-text`);
     });
 
     test("未开放前台模型时仍保留用户自己的文本渠道", () => {
         const config = systemTextConfig();
+        config.channels[0]!.id = "CHANNEL_000001";
         config.channels[0]!.modelCosts = config.channels[0]!.modelCosts?.map((item) => ({ ...item, logicalModelId: undefined }));
         config.channels.push({
             id: "custom",
@@ -125,11 +126,45 @@ describe("画布网站 Agent 发送链路", () => {
         expect(resolved.model).toBe("custom::custom-text");
     });
 
+    test("系统渠道目录模式使用 channelId 路由，不要求 logicalModelId", () => {
+        const config = systemTextConfig();
+        config.channels[0]!.id = "CHANNEL_000001";
+        config.channels[0]!.modelCosts = config.channels[0]!.modelCosts?.map((item) => ({
+            ...item,
+            logicalModelId: undefined,
+            channelModelId: `CMODEL_${item.model}`,
+        }));
+        config.model = "CHANNEL_000001::managed-text";
+        config.textModel = "CHANNEL_000001::managed-text";
+
+        expect(selectableOnlineAgentTextModels(config)).toEqual([
+            "CHANNEL_000001::legacy-text",
+            "CHANNEL_000001::managed-text",
+        ]);
+        expect(resolveOnlineAgentRequestConfig(config)).toMatchObject({
+            model: "CHANNEL_000001::managed-text",
+            textModel: "CHANNEL_000001::managed-text",
+        });
+    });
+
     test("没有可用逻辑文本路由时返回可见的配置错误", () => {
         const config = systemTextConfig();
         config.channels[0]!.modelCosts = config.channels[0]!.modelCosts?.map((item) => ({ ...item, logicalModelId: undefined }));
 
         expect(() => resolveOnlineAgentRequestConfig(config)).toThrow("未绑定可用的平台逻辑模型");
+    });
+
+    test("新建对话先同步会话 ref，首条快捷消息不会静默丢失", async () => {
+        const source = await Bun.file(new URL("../src/components/canvas/canvas-assistant-panel.tsx", import.meta.url)).text();
+
+        expect(source).toContain("const next = [session, ...localSessionsRef.current];\n        localSessionsRef.current = next;\n        setLocalSessions(next);");
+    });
+
+    test("渠道内部 reset 控制标记不会作为空白回复展示", () => {
+        expect(isOnlineAgentResetReply("<reset>")).toBe(true);
+        expect(isOnlineAgentResetReply(" <|reset|> ")).toBe(true);
+        expect(onlineAgentReplyText("<reset>")).toBe("");
+        expect(onlineAgentReplyText("请补充剧本大纲")).toBe("请补充剧本大纲");
     });
 
     test("询问怎么设置画风时固定路由到只读帮助工具", () => {
