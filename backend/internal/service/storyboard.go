@@ -97,6 +97,10 @@ func parseAgentStoryboardPlan(raw string) (agentStoryboardPlan, error) {
 	if err := validateStoryboardJSONFields(jsonText); err != nil {
 		return agentStoryboardPlan{}, err
 	}
+	jsonText, err = normalizeStoryboardNamedLists(jsonText)
+	if err != nil {
+		return agentStoryboardPlan{}, err
+	}
 	var plan agentStoryboardPlan
 	if err := json.Unmarshal([]byte(jsonText), &plan); err != nil {
 		return agentStoryboardPlan{}, fmt.Errorf("分镜 JSON 解析失败：%w", err)
@@ -140,6 +144,101 @@ func parseAgentStoryboardPlan(raw string) (agentStoryboardPlan, error) {
 		}
 	}
 	return plan, nil
+}
+
+func normalizeStoryboardNamedLists(jsonText string) (string, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(jsonText), &root); err != nil {
+		return "", fmt.Errorf("分镜 JSON 解析失败：%w", err)
+	}
+	fields := map[string][]string{
+		"characters": {"name", "characterName", "title", "role"},
+		"locations":  {"name", "locationName", "title", "description"},
+	}
+	for field, keys := range fields {
+		rawList, ok := root[field]
+		if !ok {
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(rawList, &items); err != nil {
+			return "", fmt.Errorf("分镜 JSON 的 %s 必须是数组", field)
+		}
+		values := make([]string, 0, len(items))
+		for _, item := range items {
+			var value string
+			if err := json.Unmarshal(item, &value); err != nil {
+				var object map[string]json.RawMessage
+				if objectErr := json.Unmarshal(item, &object); objectErr != nil {
+					continue
+				}
+				for _, key := range keys {
+					if candidate, exists := object[key]; exists && json.Unmarshal(candidate, &value) == nil && strings.TrimSpace(value) != "" {
+						break
+					}
+				}
+			}
+			if value = strings.TrimSpace(value); value != "" {
+				values = append(values, value)
+			}
+		}
+		normalized, _ := json.Marshal(values)
+		root[field] = normalized
+	}
+	var shots []map[string]json.RawMessage
+	if err := json.Unmarshal(root["shots"], &shots); err != nil {
+		return "", errors.New("分镜 JSON 的 shots 必须是数组")
+	}
+	textFields := []string{
+		"title", "description", "dialogue", "narrativeIntent", "viewerPOV", "performanceBlocking",
+		"shotSize", "emotion", "lightingAndAtmosphere", "audioEffects", "visualPrompt", "videoPrompt",
+		"camera", "motion", "timeBeats", "continuityOut", "negativePrompt",
+	}
+	for index := range shots {
+		for _, field := range textFields {
+			rawValue, ok := shots[index][field]
+			if !ok {
+				continue
+			}
+			shots[index][field] = normalizeStoryboardTextValue(rawValue)
+		}
+	}
+	normalizedShots, _ := json.Marshal(shots)
+	root["shots"] = normalizedShots
+	normalized, err := json.Marshal(root)
+	if err != nil {
+		return "", fmt.Errorf("分镜 JSON 标准化失败：%w", err)
+	}
+	return string(normalized), nil
+}
+
+func normalizeStoryboardTextValue(raw json.RawMessage) json.RawMessage {
+	var value string
+	if json.Unmarshal(raw, &value) == nil {
+		normalized, _ := json.Marshal(strings.TrimSpace(value))
+		return normalized
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) == nil {
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			var part string
+			if json.Unmarshal(item, &part) != nil {
+				part = strings.TrimSpace(string(item))
+			}
+			if part = strings.TrimSpace(part); part != "" && part != "null" {
+				parts = append(parts, part)
+			}
+		}
+		normalized, _ := json.Marshal(strings.Join(parts, "；"))
+		return normalized
+	}
+	value = strings.TrimSpace(string(raw))
+	if value == "null" {
+		value = ""
+	}
+	normalized, _ := json.Marshal(value)
+	return normalized
 }
 
 func validateStoryboardJSONFields(jsonText string) error {
@@ -259,6 +358,21 @@ func validateStoryboardAssetRefs(plan agentStoryboardPlan, assets []storyboardAs
 	return nil
 }
 
+// An empty canvas asset catalog makes every model-produced assetRefs value
+// impossible by definition. Clear those references without weakening strict
+// validation when the canvas actually has assets that can be bound.
+func normalizeStoryboardAssetRefs(plan *agentStoryboardPlan, assets []storyboardAsset) int {
+	if plan == nil || len(assets) != 0 {
+		return 0
+	}
+	removed := 0
+	for index := range plan.Shots {
+		removed += len(plan.Shots[index].AssetRefs)
+		plan.Shots[index].AssetRefs = []storyboardAssetRef{}
+	}
+	return removed
+}
+
 func validateStoryboardShotCount(plan agentStoryboardPlan, target int) error {
 	if target == 0 {
 		return nil
@@ -324,6 +438,26 @@ func validateStoryboardCharacterIDs(plan agentStoryboardPlan, characters []story
 		}
 	}
 	return nil
+}
+
+// When a project has no configured character versions, every model-produced
+// characterIds value is necessarily synthetic. Clear those references
+// deterministically instead of spending the repair attempt on an unambiguous
+// correction; projects with configured characters keep strict validation.
+func normalizeStoryboardCharacterIDs(plan *agentStoryboardPlan, characters []storyboardCharacterCard) int {
+	if plan == nil || len(characters) != 0 {
+		return 0
+	}
+	removed := 0
+	for index := range plan.Shots {
+		for _, assetID := range plan.Shots[index].CharacterIDs {
+			if strings.TrimSpace(assetID) != "" {
+				removed++
+			}
+		}
+		plan.Shots[index].CharacterIDs = []string{}
+	}
+	return removed
 }
 
 func storyboardRowCharacters(shot agentStoryboardShot, characters []storyboardCharacterCard) []map[string]any {

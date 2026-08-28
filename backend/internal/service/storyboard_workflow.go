@@ -92,6 +92,8 @@ func (s *Service) repairStoryboardPlan(ctx context.Context, task model.Task, inp
 		plan, parseErr := parseAgentStoryboardPlan(repairedText)
 		if parseErr == nil {
 			normalizeAutomaticStoryboardDurations(&plan, shotDuration)
+			normalizeStoryboardCharacterIDs(&plan, input.Characters)
+			normalizeStoryboardAssetRefs(&plan, input.CanvasAssets)
 			parseErr = validateStoryboardPlan(plan, shotDuration, shotCount, input.Characters, input.CanvasAssets)
 		}
 		if parseErr == nil {
@@ -148,6 +150,12 @@ func (s *Service) generateStoryboardPlan(ctx context.Context, task model.Task, i
 	plan, err := parseAgentStoryboardPlan(text)
 	if err == nil {
 		normalizeAutomaticStoryboardDurations(&plan, shotDuration)
+		if removed := normalizeStoryboardCharacterIDs(&plan, input.Characters); removed > 0 {
+			_ = s.log(task.UserID, task.ID, "warn", "已清理虚构角色引用", fmt.Sprintf("当前项目没有角色版本，已从分镜中清理 %d 个无效 characterIds 引用。", removed))
+		}
+		if removed := normalizeStoryboardAssetRefs(&plan, assets); removed > 0 {
+			_ = s.log(task.UserID, task.ID, "warn", "已清理虚构素材引用", fmt.Sprintf("当前画布没有可绑定素材，已从分镜中清理 %d 个无效 assetRefs 引用。", removed))
+		}
 		err = validateStoryboardPlan(plan, shotDuration, shotCount, input.Characters, assets)
 	}
 	if err != nil {
