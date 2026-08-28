@@ -4,7 +4,7 @@ import { Copy, Cpu, Settings2, Trash2, X } from "lucide-react";
 import { Button, Modal, Segmented, Select, Tooltip } from "antd";
 import { motion } from "motion/react";
 
-import { modelDisplayName, modelIcon, normalizeModelOptionValue, resolveModelChannel, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { logicalModelIDForConfig, modelDisplayName, modelIcon, normalizeModelOptionValue, resolveModelChannel, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall, type ToolChoice } from "@/services/api/image";
@@ -639,7 +639,9 @@ export function CanvasAssistantPanel({
     };
 
     const runCinematicSession = async (sessionId: string, text: string, current: CanvasAgentSnapshot, config: AiConfig, onCreated?: (backendSessionId: string) => void) => {
-        const requestConfig = resolveModelRequestConfig(config, config.textModel || config.model);
+        const selectedModel = config.textModel || config.model;
+        const requestConfig = resolveModelRequestConfig(config, selectedModel);
+        const logicalModelId = logicalModelIDForConfig({ ...config, model: selectedModel });
         const storyboardContext = resolveStoryboardGenerationContext(current.nodes);
         const controller = new AbortController();
         const requestKey = `creating:${nanoid()}`;
@@ -658,6 +660,7 @@ export function CanvasAssistantPanel({
                     projectStyle: storyboardContext.projectStyle,
                     characters: storyboardContext.characters,
                     config: backendAgentProviderConfig(requestConfig),
+                    logicalModelId,
                 },
                 {
                     signal: controller.signal,
