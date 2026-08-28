@@ -659,7 +659,7 @@ export function CanvasAssistantPanel({
                     canvasSnapshot: compactSnapshot(current) as unknown as Record<string, unknown>,
                     projectStyle: storyboardContext.projectStyle,
                     characters: storyboardContext.characters,
-                    config: backendAgentProviderConfig(requestConfig),
+                    config: backendAgentProviderConfig(requestConfig, logicalModelId),
                     logicalModelId,
                 },
                 {
@@ -2168,16 +2168,8 @@ function compactMetadata(metadata: CanvasNodeData["metadata"]) {
     };
 }
 
-function backendAgentProviderConfig(config: ReturnType<typeof resolveModelRequestConfig>) {
-    return {
-        channelId: config.channelId,
-        apiFormat: config.apiFormat,
-        interfaceType: config.interfaceType,
-        baseUrl: config.baseUrl,
-        allowLocalChannel: config.allowLocalChannel === true,
-        apiKey: config.apiKey,
-        secretKey: config.secretKey,
-        model: config.model,
+function backendAgentProviderConfig(config: ReturnType<typeof resolveModelRequestConfig>, logicalModelId = "") {
+    const generationOptions = {
         size: config.size,
         quality: config.quality,
         transparentBackground: config.transparentBackground,
@@ -2191,6 +2183,20 @@ function backendAgentProviderConfig(config: ReturnType<typeof resolveModelReques
         audioSpeed: config.audioSpeed,
         audioInstructions: config.audioInstructions,
         systemPrompt: config.systemPrompt,
+    };
+    // 前台逻辑模型由后端按 logicalModelId 解析真实线路。此时不能同时
+    // 携带目录占位 channelId（managed），否则会被判定为新旧目录混用。
+    if (logicalModelId) return generationOptions;
+    return {
+        channelId: config.channelId,
+        apiFormat: config.apiFormat,
+        interfaceType: config.interfaceType,
+        baseUrl: config.baseUrl,
+        allowLocalChannel: config.allowLocalChannel === true,
+        apiKey: config.apiKey,
+        secretKey: config.secretKey,
+        model: config.model,
+        ...generationOptions,
     };
 }
 
