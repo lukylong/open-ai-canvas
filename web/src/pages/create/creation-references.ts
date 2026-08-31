@@ -24,6 +24,11 @@ export function selectedCreationReferences(prompt: string, references: CreationR
     return references.filter((reference) => prompt.includes(canvasResourceMentionToken(reference)) || prompt.includes(`@${reference.label}`));
 }
 
+export function creationPromptPlaceholder(placeholder: string) {
+    const normalized = placeholder.trim().replace(/[。；;]+$/u, "");
+    return `${normalized}；输入 @ 可引用技能或素材`;
+}
+
 export function reconcileCreationAttachmentLimit(attachments: CreationAttachment[], references: CreationReference[], maxReferences: number) {
     const limit = Math.max(0, Math.floor(maxReferences));
     if (attachments.length <= limit) return { attachments, removedReferences: [] as CreationReference[] };

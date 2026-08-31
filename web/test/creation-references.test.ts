@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { canvasResourceMentionToken } from "../src/lib/canvas/canvas-resource-references";
 import { creationAttachmentKind, creationFileAccepted, creationMediaAspectRatio, creationUploadAccept, type CreationAttachment } from "../src/pages/create/creation-assets";
-import { buildCreationMentionReferences, displayCreationPrompt, reconcileCreationAttachmentLimit, removeCreationReferenceTokens, replaceCreationAttachmentReference, selectedCreationReferences } from "../src/pages/create/creation-references";
+import { buildCreationMentionReferences, creationPromptPlaceholder, displayCreationPrompt, reconcileCreationAttachmentLimit, removeCreationReferenceTokens, replaceCreationAttachmentReference, selectedCreationReferences } from "../src/pages/create/creation-references";
 
 function imageAttachment(id: string): CreationAttachment {
     return {
@@ -15,6 +15,11 @@ function imageAttachment(id: string): CreationAttachment {
 }
 
 describe("creation references", () => {
+    test("创作输入框明确提示可以使用 @ 引用技能或素材", () => {
+        expect(creationPromptPlaceholder("描述镜头内容、运动、光线与节奏")).toBe("描述镜头内容、运动、光线与节奏；输入 @ 可引用技能或素材");
+        expect(creationPromptPlaceholder("写下这一镜的故事。 ")).toBe("写下这一镜的故事；输入 @ 可引用技能或素材");
+    });
+
     test("removes attachments and prompt tokens beyond the current model limit", () => {
         const attachments = [imageAttachment("first"), imageAttachment("second"), imageAttachment("third")];
         const references = buildCreationMentionReferences([], attachments);
