@@ -12,6 +12,7 @@ import { AssetLibraryCard, AssetLibraryCardMedia } from "@/components/assets/ass
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
+import { ASSET_CATEGORY_OPTIONS, assetCategoryLabel } from "@/lib/asset-category";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
 import { groupAssetSeries, type AssetSeries } from "@/lib/asset-series";
 import { formatBytes, readFileAsDataUrl, readImageMeta } from "@/lib/image-utils";
@@ -51,13 +52,7 @@ const kindOptions = [
 
 const categoryOptions = [
     { label: "全部分类", value: "all" },
-    { label: "角色", value: "character" },
-    { label: "场景", value: "environment" },
-    { label: "服饰", value: "wardrobe" },
-    { label: "道具", value: "prop" },
-    { label: "武器", value: "weapon" },
-    { label: "画风", value: "style" },
-    { label: "其他", value: "other" },
+    ...ASSET_CATEGORY_OPTIONS,
 ];
 
 const assetKindIcons: Record<LibraryAsset["kind"], LucideIcon> = {
@@ -91,7 +86,7 @@ export default function AssetsPage() {
     const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
     const [categoryFilter, setCategoryFilter] = useState<AssetCategory | "all">("all");
     const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(20);
+    const [pageSize, setPageSize] = useState(35);
     const [editingAsset, setEditingAsset] = useState<LibraryAsset | null>(null);
     const [isAssetOpen, setIsAssetOpen] = useState(false);
     const [previewAsset, setPreviewAsset] = useState<LibraryAsset | null>(null);
@@ -1127,10 +1122,6 @@ function StorageTag({ asset }: { asset: LibraryAsset }) {
 
 function assetSearchText(asset: LibraryAsset) {
     return [asset.title, asset.source || "", asset.note || "", assetCategoryLabel(asset.category), (asset.tags || []).join(" "), asset.kind === "text" ? asset.data.content : asset.data.mimeType].join(" ").toLowerCase();
-}
-
-function assetCategoryLabel(category?: AssetCategory) {
-    return categoryOptions.find((item) => item.value === (category || "other"))?.label || "其他";
 }
 
 function assetProjectLabel(asset: LibraryAsset) {

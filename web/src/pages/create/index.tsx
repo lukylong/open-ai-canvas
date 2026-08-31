@@ -14,15 +14,17 @@ import { VoiceRecordingButton } from "@/components/conversation/voice-recording-
 import { ModelPicker } from "@/components/model-picker";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { creationCanvasHandoffPath, creationResultAssetIds } from "@/lib/canvas/canvas-asset-handoff";
+import { ASSET_CATEGORY_LABELS } from "@/lib/asset-category";
 import { createGenerationBatchRetryContexts, createGenerationRetryContext, runGenerationOperationOnce, type GenerationRetryContext } from "@/lib/canvas/canvas-project-generation";
 import { createClientId } from "@/lib/client-id";
 import { STANDARD_IMAGE_GENERATION_MAX, creationAssetsDetailPath, creationImageConversationPreviewLimit, creationImageCountLimit, creationImageSeriesId, creationImageTaskResultCompletesMessage, mergeCreationResultUrls, normalizeCreationImageCount } from "@/lib/creation-image-generation";
 import { groupAssetSeries } from "@/lib/asset-series";
+import { formatShotOrdinal } from "@/lib/shot-label";
 import { generationErrorCode, generationErrorMessage } from "@/lib/generation-error";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
 import { buildImageResolutionOptions, formatImageResolutionSize, imageRatioForSize, imageResolutionChoices, imageResolutionOption, imageSizeForResolution, supportsImageResolutionPresets, type ImageResolutionChoice } from "@/lib/image-resolution-tiers";
-import { VIDEO_RESOLUTION_OPTIONS } from "@/lib/video-generation-options";
+import { formatVideoResolutionLabel as videoResolutionLabel, VIDEO_RESOLUTION_OPTIONS } from "@/lib/video-generation-options";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationAllowed, videoDurationOptions, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
 import { inferVideoOperation, resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
 import { backendModelRuntimeRequired, isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
@@ -46,7 +48,8 @@ import type { PromptOptimizerProvider } from "@/lib/plugins/plugin-types";
 import { promptOptimizerPlugin, PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
 import { createPluginHostContext } from "@/services/plugin-host";
 import { usePluginStore } from "@/stores/use-plugin-store";
-import { buildCreationMentionReferences, creationReferenceMetadata, displayCreationPrompt, expandCreationPrompt, reconcileCreationAttachmentLimit, removeCreationReferenceTokens, replaceCreationAttachmentReference, selectedCreationReferences, type CreationReference } from "./creation-references";
+import { buildCreationMentionReferences, displayCreationPrompt, expandCreationPrompt, reconcileCreationAttachmentLimit, removeCreationReferenceTokens, replaceCreationAttachmentReference, selectedCreationReferences, type CreationReference } from "./creation-references";
+import { skillRuntime } from "@/services/skill-runtime";
 import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromAudioAsset, creationAttachmentFromDocument, creationAttachmentFromExternalAsset, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentFromVideoAsset, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, removeCreationAttachment, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
 
 type CreationMode = "text" | "image" | "video";
@@ -476,7 +479,7 @@ export default function CreatePage() {
                 category: asset.category || "other",
                 kindLabel: asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "图片",
                 asset,
-                searchText: asset.tags.join(" "),
+                searchText: (asset.tags || []).join(" "),
                 disabledReason: mode === "image" && asset.kind !== "image" ? "图片创作仅支持参考图" : undefined,
             })),
         ...externalLibraryItems,
@@ -656,8 +659,22 @@ export default function CreatePage() {
             audioCount: referenceAudios.length,
             characterCount: 0,
         });
-        const expandedPrompt = expandCreationPrompt(text, references, attachments);
-        const referenceMetadata = creationReferenceMetadata(references);
+        const skillReferences = references.flatMap((reference) => (reference.skill ? [reference.skill] : []));
+        let skillExecution: Awaited<ReturnType<typeof skillRuntime.prepare<"creation">>>;
+        try {
+            skillExecution = await skillRuntime.prepare({
+                profile: "creation",
+                prompt: expandCreationPrompt(text, references, attachments),
+                skills: skillReferences,
+                selectedSkillIds: skillReferences.map((skill) => skill.skill_id),
+            });
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "技能上下文加载失败");
+            releaseRetryLock();
+            return;
+        }
+        const expandedPrompt = skillExecution.prompt;
+        const referenceMetadata = skillExecution.metadata;
         followLatestMessageRef.current = true;
         const userMessage = newMessage("user", text, { mode, model: selectedModel, attachments, references, settings });
 		const operationId = retryContext?.clientOperationId || createClientId();
@@ -714,7 +731,7 @@ export default function CreatePage() {
             ...(mode === "image"
                 ? { size: normalizedImage?.size || ratio, quality: normalizedImage?.quality || quality, count: normalizedImage?.count || count, videoSeconds: config.videoSeconds }
                 : mode === "video"
-                  ? { size: normalizedVideo?.ratio || ratio, videoSeconds: normalizedVideo?.seconds || seconds, vquality: (normalizedVideo?.resolution || videoQuality).replace(/p$/i, "") }
+                  ? { size: normalizedVideo?.ratio ?? ratio, videoSeconds: normalizedVideo?.seconds || seconds, vquality: (normalizedVideo?.resolution ?? videoQuality).replace(/p$/i, "") }
                   : {}),
         };
         try {
@@ -1059,7 +1076,7 @@ export default function CreatePage() {
 		activeTaskLimit,
         promptOptimizerProvider,
         composerFocusRef,
-        placeholderOverride: viewMode === "storyboard" && composingNextShot ? `SC.${String(nextShotNumber).padStart(2, "0")} · 写下这一镜的镜头、画面或故事` : undefined,
+        placeholderOverride: viewMode === "storyboard" && composingNextShot ? `${formatShotOrdinal(nextShotNumber - 1)} · 写下这一镜的镜头、画面或故事` : undefined,
         onSubmit: () => void submit(),
     };
 
@@ -1143,7 +1160,7 @@ export default function CreatePage() {
     </>;
 }
 
-const creationAssetCategoryLabels: Record<string, string> = { all: "全部素材", character: "角色", environment: "场景", wardrobe: "服饰", prop: "道具", weapon: "武器", style: "画风", other: "其他" };
+const creationAssetCategoryLabels: Record<string, string> = { all: "全部素材", ...ASSET_CATEGORY_LABELS };
 
 function CreationHistoryDrawer({ open, conversations, activeId, onClose, onSelect, onDelete }: { open: boolean; conversations: CreationConversation[]; activeId: string; onClose: () => void; onSelect: (conversation: CreationConversation) => void; onDelete: (conversation: CreationConversation) => void }) {
     const [keyword, setKeyword] = useState("");
@@ -1693,9 +1710,10 @@ function GenerationSettingsMenu(props: ComposerProps) {
         ...(props.imageProfile.quality.supported ? [qualityLabel] : []),
 		...(props.mode === "image" ? [`${props.count} 张${props.seriesMode ? " · 系列" : ""}`] : []),
     ].join(" · ");
-    const summary = props.mode === "video" ? [props.ratio, ...(videoResolutionSupported ? [videoResolutionLabel(props.videoQuality)] : [])].join(" · ") : imageSummary;
+    const videoRatioSupported = props.mode === "video" && ratios.length > 0;
+    const summary = props.mode === "video" ? [...(videoRatioSupported ? [props.ratio] : []), ...(videoResolutionSupported ? [videoResolutionLabel(props.videoQuality)] : [])].join(" · ") : imageSummary;
     const panel = <div className="creation-parameter-menu">
-        {props.mode === "video" || mergedProfile.size.parameter !== "none" ? <SettingSection title="画幅" value={referenceImageSizeSelected ? referenceImageSizeLabel : props.mode === "image" && usesImageResolutionPicker ? activeImageRatio : props.ratio}><div className="creation-parameter-content"><div className="creation-choice-grid is-ratio">{referenceImageSizeValue ? <button type="button" aria-pressed={referenceImageSizeSelected} aria-label={"使用参考图尺寸 " + referenceImageSizeLabel} title={"使用参考图尺寸 " + referenceImageSizeLabel} className={"creation-reference-size-choice" + (referenceImageSizeSelected ? " is-selected" : "")} onClick={selectReferenceImageSize}><span className="creation-ratio-preview"><span style={ratioPreviewStyle(referenceImageSizeRatio)} /></span><span>参考图</span></button> : null}{ratios.map((value) => { const selected = props.mode === "image" && usesImageResolutionPicker ? value === activeImageRatio : value === props.ratio; return <button key={value} type="button" aria-pressed={selected} className={selected ? "is-selected" : ""} onClick={() => { if (props.mode === "image") selectImageRatio(value); else props.setRatio(value); setCustomRatioOpen(false); }}><span className="creation-ratio-preview"><span style={ratioPreviewStyle(value)} /></span><span>{value}</span></button>; })}</div>{props.mode !== "video" && mergedProfile.size.allowCustom && (customRatioOpen ? <label className="creation-custom-value"><span>宽 x 高</span><input value={props.ratio} onFocus={(event) => event.currentTarget.select()} onChange={(event) => props.setRatio(event.target.value)} placeholder="1920x1080 或 2:1" aria-label="自定义图片尺寸或比例" /></label> : <button type="button" className="creation-custom-trigger" onClick={() => setCustomRatioOpen(true)}><Plus />输入自定义尺寸</button>)}</div></SettingSection> : null}
+        {videoRatioSupported || props.mode !== "video" && mergedProfile.size.parameter !== "none" ? <SettingSection title="画幅" value={referenceImageSizeSelected ? referenceImageSizeLabel : props.mode === "image" && usesImageResolutionPicker ? activeImageRatio : props.ratio}><div className="creation-parameter-content"><div className="creation-choice-grid is-ratio">{referenceImageSizeValue ? <button type="button" aria-pressed={referenceImageSizeSelected} aria-label={"使用参考图尺寸 " + referenceImageSizeLabel} title={"使用参考图尺寸 " + referenceImageSizeLabel} className={"creation-reference-size-choice" + (referenceImageSizeSelected ? " is-selected" : "")} onClick={selectReferenceImageSize}><span className="creation-ratio-preview"><span style={ratioPreviewStyle(referenceImageSizeRatio)} /></span><span>参考图</span></button> : null}{ratios.map((value) => { const selected = props.mode === "image" && usesImageResolutionPicker ? value === activeImageRatio : value === props.ratio; return <button key={value} type="button" aria-pressed={selected} className={selected ? "is-selected" : ""} onClick={() => { if (props.mode === "image") selectImageRatio(value); else props.setRatio(value); setCustomRatioOpen(false); }}><span className="creation-ratio-preview"><span style={ratioPreviewStyle(value)} /></span><span>{value}</span></button>; })}</div>{props.mode !== "video" && mergedProfile.size.allowCustom && (customRatioOpen ? <label className="creation-custom-value"><span>宽 x 高</span><input value={props.ratio} onFocus={(event) => event.currentTarget.select()} onChange={(event) => props.setRatio(event.target.value)} placeholder="1920x1080 或 2:1" aria-label="自定义图片尺寸或比例" /></label> : <button type="button" className="creation-custom-trigger" onClick={() => setCustomRatioOpen(true)}><Plus />输入自定义尺寸</button>)}</div></SettingSection> : null}
         {props.mode === "video" ? (videoResolutionSupported ? <SettingSection title="清晰度" value={videoResolutionLabel(props.videoQuality)}><div className="creation-choice-grid is-resolution">{resolutions.map((option) => <button key={option.value} type="button" aria-pressed={option.value === props.videoQuality} className={option.value === props.videoQuality ? "is-selected" : ""} onClick={() => props.setVideoQuality(option.value)}>{option.label}</button>)}</div></SettingSection> : null) : <>
             {imageResolutionChoiceOptions.length ? <SettingSection title="分辨率" value={activeImageResolutionChoice === "auto" ? "自动" : activeImageResolutionChoice.toUpperCase()}><div className="creation-choice-grid is-resolution">{imageResolutionChoiceOptions.map((choice) => <button key={choice} type="button" aria-pressed={choice === activeImageResolutionChoice} className={choice === activeImageResolutionChoice ? "is-selected" : ""} onClick={() => selectImageResolution(choice)}>{choice === "auto" ? "自动" : choice.toUpperCase()}</button>)}</div></SettingSection> : null}
             {props.imageProfile.quality.supported ? <SettingSection title={activeQualityOptions.some((item) => item.value === "1k" || item.value === "2k") ? "分辨率" : "图片质量"} value={qualityLabel}><div className="creation-choice-grid is-quality">{activeQualityOptions.map((option) => <button key={option.value} type="button" aria-pressed={option.value === props.quality} className={option.value === props.quality ? "is-selected" : ""} onClick={() => props.setQuality(option.value)}><span>{option.label}</span><small>{option.description}</small></button>)}</div></SettingSection> : null}
@@ -1745,9 +1763,9 @@ function DurationMenu({ profile, seconds, onChange }: { profile: VideoCapability
 }
 
 const creationEmptyBannerFrames = [
-    { src: "/short-drama-styles/cyberpunk-neon.jpg", caption: "SC.01 · 雨夜霓虹" },
-    { src: "/short-drama-styles/suspense-noir.jpg", caption: "SC.02 · 暗巷追逐" },
-    { src: "/short-drama-styles/retro-hong-kong.jpg", caption: "SC.03 · 天台重逢" },
+    { src: "/short-drama-styles/cyberpunk-neon.jpg", caption: "镜头01 · 雨夜霓虹" },
+    { src: "/short-drama-styles/suspense-noir.jpg", caption: "镜头02 · 暗巷追逐" },
+    { src: "/short-drama-styles/retro-hong-kong.jpg", caption: "镜头03 · 天台重逢" },
 ];
 
 function CreationEmptyBanner() {
@@ -1803,7 +1821,7 @@ function StoryboardToolbar({ shots, activeIndex, composing, onSelect, onBeginCom
         <div className="storyboard-workbench-rail">
             <Tooltip title="镜头时间线"><button type="button" className={`storyboard-workbench-rail-button${railOpen ? " is-open" : ""}${composing ? " is-draft" : ""}`} aria-expanded={railOpen} aria-label="镜头时间线" onClick={() => setRailOpen((value) => !value)}><Film /><span className="storyboard-workbench-rail-badge">{composing ? nextShotNumber : shots.length}</span></button></Tooltip>
             {railOpen ? <div className="storyboard-workbench-rail-pop" role="listbox" aria-label="镜头列表">
-                <div className="storyboard-workbench-rail-pop-head"><span className="storyboard-workbench-rail-pop-title"><Clapperboard />镜头时间线<small>{composing ? `下一镜 SC.${String(nextShotNumber).padStart(2, "0")}` : `${shots.length} 个镜头`}</small></span><button type="button" className="storyboard-workbench-rail-pop-close" aria-label="关闭镜头列表" onClick={closeRail}><X /></button></div>
+                <div className="storyboard-workbench-rail-pop-head"><span className="storyboard-workbench-rail-pop-title"><Clapperboard />镜头时间线<small>{composing ? `下一镜 ${formatShotOrdinal(nextShotNumber - 1)}` : `${shots.length} 个镜头`}</small></span><button type="button" className="storyboard-workbench-rail-pop-close" aria-label="关闭镜头列表" onClick={closeRail}><X /></button></div>
                 <ul className="creation-scrollbar">
                     {shots.map((shot, index) => {
                         const status = statusOf(shot);
@@ -1812,15 +1830,15 @@ function StoryboardToolbar({ shots, activeIndex, composing, onSelect, onBeginCom
                         const thumbIsVideo = shot.result?.mode === "video";
                         return <li key={shot.user?.id || shot.result?.id || index}>
                             <button type="button" className={`storyboard-workbench-rail-row${index === activeIndex && !composing ? " is-active" : ""}`} onClick={() => { onSelect(index); closeRail(); }}>
-                                <span className="storyboard-workbench-rail-thumb">{thumbUrl ? (thumbIsVideo ? <video muted preload="metadata" src={thumbUrl} /> : <img src={thumbUrl} alt="" />) : <span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>SC.{String(index + 1).padStart(2, "0")}</em></span>}</span>
+                                <span className="storyboard-workbench-rail-thumb">{thumbUrl ? (thumbIsVideo ? <video muted preload="metadata" src={thumbUrl} /> : <img src={thumbUrl} alt="" />) : <span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>{formatShotOrdinal(index)}</em></span>}</span>
                                 <span className="storyboard-workbench-rail-info">
-                                    <span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">SC.{String(index + 1).padStart(2, "0")}</span><span className={`storyboard-workbench-rail-row-state is-${status}`}>{status === "pending" ? "生成中" : status === "error" ? "失败" : status === "done" ? "完成" : "待生成"}</span>{shot.result?.createdAt ? <time dateTime={shot.result.createdAt}>{formatMessageTime(shot.result.createdAt)}</time> : null}</span>
+                                    <span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">{formatShotOrdinal(index)}</span><span className={`storyboard-workbench-rail-row-state is-${status}`}>{status === "pending" ? "生成中" : status === "error" ? "失败" : status === "done" ? "完成" : "待生成"}</span>{shot.result?.createdAt ? <time dateTime={shot.result.createdAt}>{formatMessageTime(shot.result.createdAt)}</time> : null}</span>
                                     <span className="storyboard-workbench-rail-row-title">{title}</span>
                                 </span>
                             </button>
                         </li>;
                     })}
-                    {composing ? <li><button type="button" className="storyboard-workbench-rail-row is-draft" onClick={() => { onCancelCompose(); closeRail(); }}><span className="storyboard-workbench-rail-thumb"><span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>SC.{String(nextShotNumber).padStart(2, "0")}</em></span></span><span className="storyboard-workbench-rail-info"><span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">SC.{String(nextShotNumber).padStart(2, "0")}</span><span className="storyboard-workbench-rail-row-state">待撰写</span></span><span className="storyboard-workbench-rail-row-title">等待你的脚本</span></span></button></li> : null}
+                    {composing ? <li><button type="button" className="storyboard-workbench-rail-row is-draft" onClick={() => { onCancelCompose(); closeRail(); }}><span className="storyboard-workbench-rail-thumb"><span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>{formatShotOrdinal(nextShotNumber - 1)}</em></span></span><span className="storyboard-workbench-rail-info"><span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">{formatShotOrdinal(nextShotNumber - 1)}</span><span className="storyboard-workbench-rail-row-state">待撰写</span></span><span className="storyboard-workbench-rail-row-title">等待你的脚本</span></span></button></li> : null}
                 </ul>
                 <button type="button" className="storyboard-workbench-rail-pop-add" onClick={() => { closeRail(); onBeginCompose(); }}><Plus />新增镜头</button>
             </div> : null}
@@ -1850,7 +1868,7 @@ function StoryboardShotCard({ shot, shotNumber, modelName, busy, onRetryFailure,
     return <article className={`storyboard-workbench-card is-${status}`}>
         <header className="storyboard-workbench-card-head">
             <div className="storyboard-workbench-card-heading">
-                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">SC.{String(shotNumber).padStart(2, "0")}</span>镜头 {shotNumber}</span>
+                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">{formatShotOrdinal(shotNumber - 1)}</span></span>
                 <span className="storyboard-workbench-card-mode">{mode === "video" ? <Film /> : mode === "image" ? <ImageIcon /> : <MessageSquareText />}{modeLabels[mode]}</span>
                 {modelName ? <span className="storyboard-workbench-card-model">{modelName}</span> : null}
                 {status === "pending" ? <span className="storyboard-workbench-card-state is-pending"><LoaderCircle className="animate-spin" />生成中</span> : status === "error" ? <span className="storyboard-workbench-card-state is-error">生成失败</span> : status === "done" ? <span className="storyboard-workbench-card-state is-done"><Check />已完成</span> : <span className="storyboard-workbench-card-state">待生成</span>}
@@ -1893,7 +1911,7 @@ function StoryboardNextShotCard({ shotNumber, onCancel }: { shotNumber: number; 
     return <article className="storyboard-workbench-card is-next">
         <header className="storyboard-workbench-card-head">
             <div className="storyboard-workbench-card-heading">
-                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">SC.{String(shotNumber).padStart(2, "0")}</span>下一镜 {shotNumber}</span>
+                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">{formatShotOrdinal(shotNumber - 1)}</span>下一镜</span>
                 <span className="storyboard-workbench-card-state is-draft"><Clapperboard />待撰写</span>
             </div>
             <div className="storyboard-workbench-card-actions">
@@ -1904,8 +1922,8 @@ function StoryboardNextShotCard({ shotNumber, onCancel }: { shotNumber: number; 
             <div className="storyboard-workbench-next-panel">
                 <span className="storyboard-workbench-next-panel-icon"><Clapperboard /></span>
                 <div className="storyboard-workbench-next-panel-copy">
-                    <strong>SC.{String(shotNumber).padStart(2, "0")} 等待你的脚本</strong>
-                    <span>在下方写下这一镜的镜头、画面或故事。影策会拆解脚本、设计运镜并渲染成片，这一镜会作为 SC.{String(shotNumber).padStart(2, "0")} 自动加入镜头轨道。</span>
+                    <strong>{formatShotOrdinal(shotNumber - 1)} 等待你的脚本</strong>
+                    <span>在下方写下这一镜的镜头、画面或故事。影策会拆解脚本、设计运镜并渲染成片，这一镜会作为 {formatShotOrdinal(shotNumber - 1)} 自动加入镜头轨道。</span>
                 </div>
             </div>
         </div>
@@ -1948,10 +1966,6 @@ function StoryboardShotResult({ result, onRetryFailure, onCreateVariant, canvasP
         <div className="storyboard-workbench-media-meta"><span>{mode === "video" ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成变体</button><Link to={canvasPath}>{canvasHandoffAvailable ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
         <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </>;
-}
-
-function videoResolutionLabel(value: string | number) {
-    return Number(String(value).replace(/p$/i, "")) === 2160 ? "4K" : `${String(value).replace(/p$/i, "")}P`;
 }
 
 function formatMessageTime(value: string) {

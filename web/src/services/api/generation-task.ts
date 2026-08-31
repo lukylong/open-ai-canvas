@@ -129,6 +129,20 @@ export async function runBackendGenerationTask(
     return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta }, prepared, dependencies);
 }
 
+// 分镜等后台生产流程只需要可靠提交任务；任务状态与产物由项目工作区轮询和
+// 后端自动回填负责，不能让页面 mutation 一直等待供应商完成。
+export async function submitBackendGenerationTask(
+    options: BackendGenerationTaskOptions,
+    dependencies: GenerationTaskDependencies = defaultDependencies,
+): Promise<GenerationTask> {
+    throwIfAborted(options.signal);
+    assertClientPromptLimit(options.mode, options.prompt, options.config, options.metadata);
+    if (usesLocalDreamina(options.config)) throw new Error("本机即梦任务暂不支持后台提交");
+    const prepared = await prepareGenerationReferences(options);
+    throwIfAborted(options.signal);
+    return createBackendGenerationTask(options, prepared, dependencies);
+}
+
 export async function runBackendToolGenerationTask(options: {
     projectId: string;
     prompt: string;
@@ -474,11 +488,17 @@ async function prepareGenerationReferences({
 }
 
 async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
-	const { signal, onTaskUpdate, onTextDelta } = options;
-	const task = await dependencies.createTask(backendGenerationTaskInput(options, prepared));
-    onTaskUpdate?.(task);
+    const task = await createBackendGenerationTask(options, prepared, dependencies);
+    const { signal, onTaskUpdate, onTextDelta } = options;
     const completed = await dependencies.waitTask(task.id, { signal, initialTask: task, onTaskUpdate, onTextDelta });
     return parseBackendGenerationResult(completed);
+}
+
+async function createBackendGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
+    const task = await dependencies.createTask(backendGenerationTaskInput(options, prepared));
+    const { onTaskUpdate } = options;
+    onTaskUpdate?.(task);
+    return task;
 }
 
 function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences) {

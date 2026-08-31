@@ -36,15 +36,15 @@ import { canvasAgentPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { resolveStoryboardGenerationContext } from "@/lib/canvas/canvas-storyboard-context";
 import { CANVAS_PROJECT_STYLE_GUIDE_TOOL, claimOnlineToolApproval, expirePendingOnlineToolApprovals, isOnlineAgentResetReply, onlineAgentReplyText, onlineAgentStepLimitSummary, projectStyleSetupGuide, resolveOnlineAgentFirstToolChoice, resolveOnlineAgentRequestConfig, selectableOnlineAgentTextModels, shouldApplyExternalAssistantSessionState } from "@/lib/canvas/canvas-assistant-dispatch";
 import { createDirectorPromptProposal, selectDirectorPromptProposal, type DirectorPromptProposal } from "@/services/api/projects";
-import { buildSkillMentionReferences } from "@/lib/canvas/canvas-skill-mentions";
 import { buildCanvasWorkflowOps, looksLikeWorkflowRequest, type CanvasWorkflowInput } from "@/lib/canvas/canvas-agent-workflow";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
+import { buildSkillMentionReferences, SKILL_RUNTIME_AGENT_GUIDANCE, skillRuntime } from "@/services/skill-runtime";
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
-export const ONLINE_AGENT_MAX_STEPS = 6;
+export const ONLINE_AGENT_MAX_STEPS = 8;
 const ONLINE_AGENT_PROMPT =
-    "你是影策网页内置在线画布助手。询问“怎么、如何、在哪里设置项目画风”等操作帮助时，首轮固定调用 canvas_get_project_style_guide，不得启动影视项目或生成分镜；其他请求首轮先调用 canvas_get_context。用户明确要创建短剧、漫剧、影视剧的项目、剧本、分镜或完整工作流时，读取上下文后必须调用 canvas_create_cinematic_session，禁止用 canvas_create_workflow 拼装角色卡、三视图和所谓分镜视频来冒充影视项目。canvas_create_workflow 只用于不属于短剧/漫剧项目的通用节点流水线。涉及已有节点时用 canvas_find_nodes 获取真实 id，涉及媒体参考时用 canvas_get_resources。通用流水线、工作流、管线、节点图或用户要求连线时，使用 canvas_create_workflow：把需求拆成有语义的节点类型、真实内容/提示词、边和布局，禁止退化成空文本卡片。复杂写操作先 canvas_validate_ops，再执行 canvas_apply_ops。任何写入后都必须检查工具返回的真实节点类型、connectionCount、overlapWarnings 和 verification；没有真实连线或资源时不得声称完成。不要输出 JSON ops、不要猜 id、不要把未就绪资源当作可用素材、不要编造执行结果。需要用户选择时给出可点击短选项。用户提及技能时先用 canvas_get_skill 加载技能，再按技能契约执行。";
+    `你是影策网页内置在线画布助手。询问“怎么、如何、在哪里设置项目画风”等操作帮助时，首轮固定调用 canvas_get_project_style_guide，不得启动影视项目或生成分镜；其他请求首轮先调用 canvas_get_context。用户明确要创建短剧、漫剧、影视剧的项目、剧本、分镜或完整工作流时，读取上下文后必须调用 canvas_create_cinematic_session，禁止用 canvas_create_workflow 拼装角色卡、三视图和所谓分镜视频来冒充影视项目。canvas_create_workflow 只用于不属于短剧/漫剧项目的通用节点流水线。涉及已有节点时用 canvas_find_nodes 获取真实 id，涉及媒体参考时用 canvas_get_resources。通用流水线、工作流、管线、节点图或用户要求连线时，使用 canvas_create_workflow：把需求拆成有语义的节点类型、真实内容/提示词、边和布局，禁止退化成空文本卡片。复杂写操作先 canvas_validate_ops，再执行 canvas_apply_ops。任何写入后都必须检查工具返回的真实节点类型、connectionCount、overlapWarnings 和 verification；没有真实连线或资源时不得声称完成。不要输出 JSON ops、不要猜 id、不要把未就绪资源当作可用素材、不要编造执行结果。需要用户选择时给出可点击短选项。${SKILL_RUNTIME_AGENT_GUIDANCE}`;
 const JSON_RECORD_SCHEMA = { type: "object", additionalProperties: true };
 const POSITION_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"], additionalProperties: false };
 const VIEWPORT_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, k: { type: "number" } }, required: ["x", "y", "k"], additionalProperties: false };
@@ -93,7 +93,7 @@ const CANVAS_OP_SCHEMA = {
     required: ["type"],
     additionalProperties: false,
 };
-const ONLINE_READ_TOOLS = new Set(["canvas_list_skills", "canvas_get_skill", "canvas_get_state", "canvas_get_context", "canvas_find_nodes", "canvas_get_node", "canvas_get_connection", "canvas_get_generation_tasks", "canvas_get_resources", "canvas_validate_ops", "canvas_get_selection", "canvas_export_snapshot", CANVAS_PROJECT_STYLE_GUIDE_TOOL]);
+const ONLINE_READ_TOOLS = new Set([...skillRuntime.agentToolNames("onlineAgent"), "canvas_list_skills", "canvas_get_skill", "canvas_get_state", "canvas_get_context", "canvas_find_nodes", "canvas_get_node", "canvas_get_connection", "canvas_get_generation_tasks", "canvas_get_resources", "canvas_validate_ops", "canvas_get_selection", "canvas_export_snapshot", CANVAS_PROJECT_STYLE_GUIDE_TOOL]);
 
 function toolDefinition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], strict = false): ResponseFunctionTool {
     return { type: "function", function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false }, strict } };
@@ -118,8 +118,7 @@ function generationToolDefinition(name: string, description: string, mode?: "tex
 }
 
 const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
-    toolDefinition("canvas_list_skills", "列出当前用户已加入、可按需加载的画布技能；只返回元数据，不返回完整指令。", {}),
-    toolDefinition("canvas_get_skill", "按 skillId 或技能名称按需加载一个画布技能的完整契约。技能正文通过工具结果提供，不会自动注入每条用户消息。", { skillId: { type: "string" }, name: { type: "string" } }),
+    ...skillRuntime.agentTools("onlineAgent"),
     toolDefinition("canvas_get_state", "读取当前网页画布的节点、连线、选区和视口。", {}),
     toolDefinition(CANVAS_PROJECT_STYLE_GUIDE_TOOL, "读取当前项目画风状态，并返回项目画布与独立画布的准确设置入口和操作步骤。仅用于询问如何、在哪里设置画风的帮助问题。", {}),
     toolDefinition("canvas_get_context", "读取语义化画布上下文、真实节点 id、连接关系、资源就绪状态和状态哈希。", {}),
@@ -906,21 +905,8 @@ export function CanvasAssistantPanel({
             if (expectedRevision !== undefined && expectedRevision !== (current.revision ?? 0)) return { ok: false, message: "画布 revision 已变化，请重新读取 canvas_get_context 后再执行写操作。" };
             const expectedStateHash = typeof args.expectedStateHash === "string" ? args.expectedStateHash : "";
             if (expectedStateHash && expectedStateHash !== buildCanvasAgentContext(current).stateHash) return { ok: false, message: "画布状态已变化，请重新读取 canvas_get_context 后再执行写操作。" };
-            if (name === "canvas_list_skills") {
-                const data = composerSkills.filter((skill) => skill.is_added).map((skill) => ({ skillId: skill.skill_id, name: skill.skill_name, description: skill.description, tag: skill.tag }));
-                return { ok: true, message: data.length ? "已列出当前可用技能。" : "当前没有已加入技能。", data };
-            }
-            if (name === "canvas_get_skill") {
-                const skillId = typeof args.skillId === "string" ? args.skillId : "";
-                const nameQuery = typeof args.name === "string" ? args.name.trim().toLocaleLowerCase() : "";
-                const skill = composerSkills.find((item) => item.is_added && (item.skill_id === skillId || item.skill_name.toLocaleLowerCase() === nameQuery));
-                if (!skill) return { ok: false, message: "未找到已加入的技能，请先调用 canvas_list_skills。" };
-                return {
-                    ok: true,
-                    message: `已按需加载技能「${skill.skill_name}」。`,
-                    data: { skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description, version: skill.update_time },
-                };
-            }
+            const skillToolResult = await skillRuntime.executeAgentTool("onlineAgent", name, args, composerSkills);
+            if (skillToolResult) return skillToolResult;
             if (name === "canvas_get_state") return { ok: true, message: describeCanvasSnapshot(current), data: compactSnapshot(current) };
             if (name === CANVAS_PROJECT_STYLE_GUIDE_TOOL) {
                 const message = projectStyleSetupGuide(current.nodes);
@@ -1893,7 +1879,10 @@ function previewOnlineToolCalls(calls: ResponseToolCall[], snapshot: CanvasAgent
 
 function toolCallLabel(name: string) {
     if (name === "canvas_list_skills") return "列出技能";
-    if (name === "canvas_get_skill") return "加载技能";
+    if (name === "canvas_get_skill") return "读取技能入口";
+    if (name === "canvas_list_skill_files") return "列出技能文件";
+    if (name === "canvas_read_skill_file") return "读取技能文件";
+    if (name === "canvas_search_skill_files") return "搜索技能文件";
     if (name === "canvas_apply_ops") return "画布操作";
     if (name === "canvas_get_state") return "读取画布";
     if (name === CANVAS_PROJECT_STYLE_GUIDE_TOOL) return "读取画风设置说明";
@@ -2106,7 +2095,7 @@ async function buildToolAgentMessages(snapshot: CanvasAgentSnapshot, history: Ca
     const skillCatalog = skills
         .filter((skill) => skill.is_added)
         .slice(0, 40)
-        .map((skill) => `- ${skill.skill_name}（${skill.skill_id}）：${skill.description}`)
+        .map((skill) => `- ${skill.skill_name}（${skill.skill_id}，v${skill.version || "1"}，${skill.file_count || 1} 文件）：${skill.description}`)
         .join("\n");
     const systemContent = [ONLINE_AGENT_PROMPT, skillCatalog ? `当前可按需加载的技能（仅元数据）：\n${skillCatalog}` : ""].filter(Boolean).join("\n\n");
     return [

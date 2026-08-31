@@ -4,11 +4,11 @@ import "time"
 
 type Task struct {
 	ID                     string     `json:"id" gorm:"primaryKey;size:36"`
-	UserID                 string     `json:"userId" gorm:"index;size:36;index:idx_tasks_user_created,priority:1"`
+	UserID                 string     `json:"userId" gorm:"index;size:36;index:idx_tasks_user_created,priority:1;index:idx_tasks_user_project_created,priority:1"`
 	TraceID                string     `json:"-" gorm:"index;size:96"`
 	RequestID              string     `json:"-" gorm:"index;size:96"`
 	SessionID              string     `json:"sessionId" gorm:"index;size:36"`
-	ProjectID              string     `json:"projectId" gorm:"index;size:80"`
+	ProjectID              string     `json:"projectId" gorm:"index;size:80;index:idx_tasks_user_project_created,priority:2"`
 	BatchID                string     `json:"batchId,omitempty" gorm:"index;size:36"`
 	BatchItemID            *string    `json:"batchItemId,omitempty" gorm:"uniqueIndex;size:36"`
 	BatchIndex             int        `json:"batchIndex,omitempty"`
@@ -45,7 +45,7 @@ type Task struct {
 	Attempts                  int                  `json:"attempts"`
 	StartedAt                 *time.Time           `json:"startedAt"`
 	CompletedAt               *time.Time           `json:"completedAt"`
-	CreatedAt                 time.Time            `json:"createdAt" gorm:"index:idx_tasks_user_created,priority:2;index:idx_tasks_status_created,priority:2;index:idx_tasks_claim,priority:3"`
+	CreatedAt                 time.Time            `json:"createdAt" gorm:"index:idx_tasks_user_created,priority:2;index:idx_tasks_status_created,priority:2;index:idx_tasks_claim,priority:3;index:idx_tasks_user_project_created,priority:3"`
 	UpdatedAt                 time.Time            `json:"updatedAt"`
 }
 

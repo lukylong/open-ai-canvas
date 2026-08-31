@@ -1,5 +1,5 @@
 import type { ModelChannel } from "@/stores/use-config-store";
-import type { CreditLedgerEntry } from "@/services/api/wallet";
+import type { BillingOrder, CreditLedgerEntry } from "@/services/api/wallet";
 import type { GenerationTask, TaskStatus } from "@/services/api/task-center";
 import type { CanvasDrawingEngineSetting } from "@/lib/canvas/canvas-drawing-engine";
 import type { FeatureAvailability } from "@/stores/use-user-store";
@@ -61,6 +61,10 @@ export type ApiCallLog = {
     channelName: string;
     taskId?: string;
     taskStatus?: TaskStatus;
+    billingOrderId?: string;
+    billingStatus?: BillingOrder["status"];
+    billingAmountMicrocredits: number;
+    billingAvailable: boolean;
     source: string;
     capability: "text" | "image" | "video" | "audio" | "";
     operation?: string;
@@ -121,8 +125,15 @@ export type AdminUserDetail = {
     account: { userId: string; availableMicrocredits: number; reservedMicrocredits: number; version: number };
     counts: { ledgerEntries: number; tasks: number; apiCalls: number; auditEvents: number };
     storageUsage: {
-        assetCount: number; assetBytes: number; canvasCount: number; canvasBytes: number;
-        sessionCount: number; sessionBytes: number; taskCount: number; taskBytes: number; apiCallCount: number;
+        assetCount: number;
+        assetBytes: number;
+        canvasCount: number;
+        canvasBytes: number;
+        sessionCount: number;
+        sessionBytes: number;
+        taskCount: number;
+        taskBytes: number;
+        apiCallCount: number;
     };
     storedFileBytes: number;
     dailyUploadBytes: number;
@@ -151,7 +162,7 @@ export type AnalyticsFilters = {
 
 export type AdminReferenceData = {
     users: Array<{ id: string; username: string; displayName: string }>;
-    channels: Array<{ id: string; name: string; models: string[] }>;
+    channels: Array<{ id: string; name: string; enabled: boolean; models: string[] }>;
 };
 
 export type AdminAnalytics = {
@@ -357,7 +368,6 @@ export type RuntimePolicySetting = {
     updatedAt?: string;
 };
 
-
 export function getAuthSettings() {
     return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean; invitationCodeRequired: boolean }>(api.get("/auth/settings"));
 }
@@ -409,7 +419,15 @@ export function sendRegistrationEmailCode(email: string) {
     return request<{ sent: boolean }>(api.post("/auth/email-code", { email }));
 }
 
-export function register(input: { username: string; email?: string; invitationCode?: string; displayName?: string; password: string }) {
+export function sendPasswordResetEmailCode(email: string) {
+    return request<{ sent: boolean }>(api.post("/auth/password-reset-code", { email }));
+}
+
+export function resetPassword(input: { email: string; emailCode: string; password: string }) {
+    return request<{ reset: boolean }>(api.post("/auth/password-reset", input));
+}
+
+export function register(input: { username: string; email?: string; emailCode?: string; invitationCode?: string; displayName?: string; password: string }) {
     return request<{ user: LocalUser }>(api.post("/auth/register", input));
 }
 

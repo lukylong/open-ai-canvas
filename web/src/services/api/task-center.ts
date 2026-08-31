@@ -79,7 +79,13 @@ export type GenerationTask = {
         batchIndex?: number;
         batchCount?: number;
         seriesId?: string;
-    };
+        domainProjectId?: string;
+        chapterId?: string;
+		chapterOperation?: "characters" | "storyboard";
+		shotId?: string;
+		workflowStepId?: string;
+		artifactType?: string;
+	};
     created_at?: string;
     updated_at?: string;
 };

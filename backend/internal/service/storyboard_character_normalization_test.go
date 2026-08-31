@@ -54,7 +54,7 @@ func TestNormalizeStoryboardCharacterIDsWithoutConfiguredCharacters(t *testing.T
 	}
 }
 
-func TestNormalizeStoryboardCharacterIDsKeepsStrictValidationWithConfiguredCharacters(t *testing.T) {
+func TestNormalizeStoryboardCharacterIDsKeepsKnownIDsAndDemotesUnknownReferences(t *testing.T) {
 	plan := agentStoryboardPlan{Shots: []agentStoryboardShot{{CharacterIDs: []string{"known", "invented"}}}}
 	characters := []storyboardCharacterCard{{AssetID: "known", VersionID: "v1", Name: "已配置角色"}}
 
@@ -62,8 +62,12 @@ func TestNormalizeStoryboardCharacterIDsKeepsStrictValidationWithConfiguredChara
 	if removed != 0 {
 		t.Fatalf("removed = %d, want 0", removed)
 	}
-	if err := validateStoryboardCharacterIDs(plan, characters); err == nil {
-		t.Fatal("configured-character validation unexpectedly accepted an invented assetId")
+	normalizeStoryboardCharacterReferences(&plan, characters)
+	if got := plan.Shots[0].CharacterIDs; len(got) != 1 || got[0] != "known" {
+		t.Fatalf("characterIds = %#v, want [known]", got)
+	}
+	if got := plan.Shots[0].CharacterNames; len(got) != 1 || got[0] != "invented" {
+		t.Fatalf("characterNames = %#v, want [invented]", got)
 	}
 }
 

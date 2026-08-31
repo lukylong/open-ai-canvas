@@ -68,6 +68,7 @@ type ParameterSupport struct {
 type VideoCapabilityConfig struct {
 	References        VideoReferenceConfig `json:"references"`
 	Duration          VideoDurationConfig  `json:"duration"`
+	DurationSupported *bool                `json:"durationSupported,omitempty"`
 	Ratios            []string             `json:"ratios"`
 	DefaultRatio      string               `json:"defaultRatio"`
 	Resolutions       []string             `json:"resolutions"`
@@ -107,6 +108,10 @@ type VideoBooleanConfig struct {
 
 func DefaultModelCapabilityConfig(protocol string) *ModelCapabilityConfig {
 	return DefaultModelCapabilityConfigForModel(protocol, "")
+}
+
+func videoDurationSupported(value *VideoCapabilityConfig) bool {
+	return value == nil || value.DurationSupported == nil || *value.DurationSupported
 }
 
 func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapabilityConfig {
@@ -547,8 +552,12 @@ func validateVideoCapabilityConfig(value *VideoCapabilityConfig) error {
 	if err := validateVideoDuration(value.Duration); err != nil {
 		return err
 	}
-	if len(value.Ratios) == 0 || strings.TrimSpace(value.DefaultRatio) == "" || !containsCapabilityString(value.Ratios, value.DefaultRatio) {
-		return BadAuthRequest("请至少配置一个画面比例，并选择默认比例")
+	if len(value.Ratios) == 0 {
+		if strings.TrimSpace(value.DefaultRatio) != "" {
+			return BadAuthRequest("未配置画面比例时不能设置默认比例")
+		}
+	} else if strings.TrimSpace(value.DefaultRatio) == "" || !containsCapabilityString(value.Ratios, value.DefaultRatio) {
+		return BadAuthRequest("默认画面比例必须属于支持值")
 	}
 	if len(value.Resolutions) == 0 {
 		if strings.TrimSpace(value.DefaultResolution) != "" {

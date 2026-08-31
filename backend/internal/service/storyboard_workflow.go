@@ -94,7 +94,7 @@ func (s *Service) repairStoryboardPlan(ctx context.Context, task model.Task, inp
 			normalizeAutomaticStoryboardDurations(&plan, shotDuration)
 			normalizeStoryboardCharacterIDs(&plan, input.Characters)
 			normalizeStoryboardAssetRefs(&plan, input.CanvasAssets)
-			parseErr = validateStoryboardPlan(plan, shotDuration, shotCount, input.Characters, input.CanvasAssets)
+			parseErr = validateStoryboardPlan(&plan, shotDuration, shotCount, input.Characters, input.CanvasAssets)
 		}
 		if parseErr == nil {
 			return plan, nil
@@ -156,7 +156,7 @@ func (s *Service) generateStoryboardPlan(ctx context.Context, task model.Task, i
 		if removed := normalizeStoryboardAssetRefs(&plan, assets); removed > 0 {
 			_ = s.log(task.UserID, task.ID, "warn", "已清理虚构素材引用", fmt.Sprintf("当前画布没有可绑定素材，已从分镜中清理 %d 个无效 assetRefs 引用。", removed))
 		}
-		err = validateStoryboardPlan(plan, shotDuration, shotCount, input.Characters, assets)
+		err = validateStoryboardPlan(&plan, shotDuration, shotCount, input.Characters, assets)
 	}
 	if err != nil {
 		plan, err = s.repairStoryboardPlan(ctx, task, input, config, text, err, shotDuration, shotCount)
