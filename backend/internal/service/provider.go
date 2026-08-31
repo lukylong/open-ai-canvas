@@ -731,7 +731,10 @@ func postStreamingAgent(ctx context.Context, config providerConfig, path string,
 		}
 	}
 	parser := newStreamingAgentParser(protocol, onDelta)
-	data, mimeType, err := postStreamingBinary(ctx, config, path, body, parser.consume)
+	data, mimeType, err := postStreamingBinary(ctx, config, path, body, func(mimeType string, chunk []byte) bool {
+		parser.consume(mimeType, chunk)
+		return parser.terminal
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -760,6 +763,7 @@ type streamingAgentParser struct {
 	toolCalls    map[int]*streamingAgentToolCall
 	toolCallByID map[string]int
 	completed    map[string]interface{}
+	terminal     bool
 	err          error
 	emit         func(string)
 }
@@ -810,7 +814,11 @@ func (p *streamingAgentParser) consumeFrame(frame string) {
 		}
 	}
 	raw := strings.TrimSpace(strings.Join(dataLines, "\n"))
-	if raw == "" || raw == "[DONE]" {
+	if raw == "" {
+		return
+	}
+	if raw == "[DONE]" {
+		p.terminal = true
 		return
 	}
 	var payload map[string]interface{}
@@ -841,6 +849,7 @@ func (p *streamingAgentParser) consumeResponsesEvent(eventName string, payload m
 		p.reasoning.WriteString(stringField(payload, "delta"))
 	case "response.completed":
 		p.completed, _ = payload["response"].(map[string]interface{})
+		p.terminal = true
 	case "response.output_item.added":
 		item, _ := payload["item"].(map[string]interface{})
 		if stringField(item, "type") == "function_call" {
@@ -919,6 +928,8 @@ func (p *streamingAgentParser) consumeClaudeEvent(payload map[string]interface{}
 	case "error":
 		errValue, _ := payload["error"].(map[string]interface{})
 		p.err = errors.New(defaultString(stringField(errValue, "message"), "Claude 上游返回失败"))
+	case "message_stop":
+		p.terminal = true
 	}
 }
 
@@ -4044,7 +4055,10 @@ func postStreamingText(ctx context.Context, config providerConfig, path string, 
 	// 只把分镜规划/修复切到上游 SSE，完整 JSON 仍在流结束后校验，避免半截结构污染画布。
 	body["stream"] = true
 	parser := newStreamingTextDeltaParser(protocol, onDelta)
-	data, mimeType, err := postStreamingBinary(ctx, config, path, body, parser.consume)
+	data, mimeType, err := postStreamingBinary(ctx, config, path, body, func(mimeType string, chunk []byte) bool {
+		parser.consume(mimeType, chunk)
+		return parser.terminal
+	})
 	if err != nil {
 		return "", err
 	}
@@ -4195,7 +4209,7 @@ func streamContentText(value interface{}) string {
 	return result.String()
 }
 
-func postStreamingBinary(ctx context.Context, config providerConfig, path string, body interface{}, onChunk func(string, []byte)) ([]byte, string, error) {
+func postStreamingBinary(ctx context.Context, config providerConfig, path string, body interface{}, onChunk func(string, []byte) bool) ([]byte, string, error) {
 	data, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(config.BaseURL, path), bytes.NewReader(data))
 	if err != nil {
@@ -4212,6 +4226,7 @@ type streamingTextDeltaParser struct {
 	protocol string
 	buffer   string
 	emit     func(string)
+	terminal bool
 }
 
 func newStreamingTextDeltaParser(protocol string, emit func(string)) *streamingTextDeltaParser {
@@ -4219,7 +4234,7 @@ func newStreamingTextDeltaParser(protocol string, emit func(string)) *streamingT
 }
 
 func (p *streamingTextDeltaParser) consume(mimeType string, chunk []byte) {
-	if p == nil || p.emit == nil || !strings.Contains(strings.ToLower(mimeType), "event-stream") || len(chunk) == 0 {
+	if p == nil || !strings.Contains(strings.ToLower(mimeType), "event-stream") || len(chunk) == 0 {
 		return
 	}
 	p.buffer += string(chunk)
@@ -4227,7 +4242,7 @@ func (p *streamingTextDeltaParser) consume(mimeType string, chunk []byte) {
 }
 
 func (p *streamingTextDeltaParser) flush() {
-	if p == nil || p.emit == nil {
+	if p == nil {
 		return
 	}
 	p.consumeFrames(true)
@@ -4260,21 +4275,34 @@ func (p *streamingTextDeltaParser) consumeFrame(frame string) {
 		}
 	}
 	raw := strings.TrimSpace(strings.Join(dataLines, "\n"))
-	if raw == "" || raw == "[DONE]" {
+	if raw == "" {
+		return
+	}
+	if raw == "[DONE]" {
+		p.terminal = true
 		return
 	}
 	var payload map[string]interface{}
 	if json.Unmarshal([]byte(raw), &payload) != nil {
 		return
 	}
+	eventType := firstNonEmptyString(strings.TrimSpace(eventName), stringField(payload, "type"))
+	if (p.protocol == "responses" && eventType == "response.completed") || (p.protocol == "claude-api" && eventType == "message_stop") {
+		p.terminal = true
+	}
 	if delta := streamingTextDelta(p.protocol, eventName, payload); delta != "" {
-		p.emit(delta)
+		if p.emit != nil {
+			p.emit(delta)
+		}
 	}
 }
 
 func streamingTextDelta(protocol string, eventName string, payload map[string]interface{}) string {
 	if protocol == "responses" {
 		eventType := firstNonEmptyString(strings.TrimSpace(eventName), stringField(payload, "type"))
+		if eventType == "response.completed" {
+			return ""
+		}
 		if eventType == "response.output_text.delta" || eventType == "output_text.delta" || eventType == "" || eventType == "message" {
 			return stringField(payload, "delta")
 		}
@@ -4452,7 +4480,7 @@ func doBinary(req *http.Request) ([]byte, string, error) {
 	return doBinaryWithConsumer(req, nil)
 }
 
-func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]byte, string, error) {
+func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte) bool) ([]byte, string, error) {
 	startedAt := time.Now()
 	requestTimeout := providerHTTPTimeout
 	if deadline, ok := req.Context().Deadline(); ok {
@@ -4537,8 +4565,8 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 				return nil, "", err
 			}
 			_, _ = buffered.Write(chunk[:readCount])
-			if onChunk != nil {
-				onChunk(mimeType, chunk[:readCount])
+			if onChunk != nil && onChunk(mimeType, chunk[:readCount]) {
+				break
 			}
 		}
 		if errors.Is(readErr, io.EOF) {

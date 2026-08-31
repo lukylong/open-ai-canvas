@@ -472,6 +472,41 @@ data: [DONE]
 	}
 }
 
+func TestPostStreamingAgentReturnsAfterDoneWithoutWaitingForEOF(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"完成\"}}]}\n\ndata: [DONE]\n\n"))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	resultChannel := make(chan map[string]interface{}, 1)
+	errorChannel := make(chan error, 1)
+	go func() {
+		result, err := postStreamingAgent(context.Background(), providerConfig{BaseURL: server.URL, APIKey: "test-key"}, "/chat/completions", map[string]interface{}{"model": "test-model"}, "chat-completion", nil)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		resultChannel <- result
+	}()
+
+	select {
+	case result := <-resultChannel:
+		if result["text"] != "完成" {
+			t.Fatalf("text = %v", result["text"])
+		}
+	case err := <-errorChannel:
+		t.Fatalf("postStreamingAgent() error = %v", err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("postStreamingAgent() waited for EOF after receiving [DONE]")
+	}
+}
+
 func TestStreamingAgentParserSeparatesResponsesReasoningFromVisibleText(t *testing.T) {
 	var deltas strings.Builder
 	parser := newStreamingAgentParser("responses", func(delta string) {
