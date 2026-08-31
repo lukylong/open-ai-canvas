@@ -42,32 +42,47 @@ export async function applyUserSession(payload: AuthSessionPayload) {
         if (!persistedCanvas) useCanvasStore.setState({ projects: [] });
         if (!persistedAssets) useAssetStore.setState({ assets: [] });
         if (!persistedPlugins) usePluginStore.setState({ installations: [], runtimeStatuses: {}, pluginStates: {} });
-        if (!persistedConfig) {
+        if (!payload.user?.id) {
+            // 模型目录是登录接口。访客页只恢复访客自己的本地配置，不能在登录页
+            // 预取受保护接口并把预期的 401 当成初始化失败。
+            if (!persistedConfig) useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: defaultConfig }).config);
+        } else if (!persistedConfig) {
             // 只有首次配置缺失时才生成能力推荐；已有配置中的空数组代表用户明确清空。
             // 使用统一模型目录接口
-            const catalog = await getModelCatalog();
-            let channels: ModelChannel[] = [];
-            if (catalog.source === "frontend" && catalog.models) {
-                channels = managedModelChannels(catalog.models);
-            } else if (catalog.source === "system" && catalog.channels) {
-                channels = systemChannelModelChannels(catalog.channels);
+            try {
+                const catalog = await getModelCatalog();
+                let channels: ModelChannel[] = [];
+                if (catalog.source === "frontend" && catalog.models) {
+                    channels = managedModelChannels(catalog.models);
+                } else if (catalog.source === "system" && catalog.channels) {
+                    channels = systemChannelModelChannels(catalog.channels);
+                }
+                const initialSystemConfig = {
+                    ...defaultConfig,
+                    channels,
+                    imageModels: undefined,
+                    videoModels: undefined,
+                    textModels: undefined,
+                    audioModels: undefined,
+                };
+                useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: initialSystemConfig }).config);
+            } catch (error) {
+                // 模型目录短暂不可用时仍允许用户进入工作区；保留一个明确的空配置，
+                // 后续可从设置页刷新，而不是把有效登录误判成访客会话。
+                useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: defaultConfig }).config);
+                console.warn("平台模型目录加载失败，已保留登录并使用空模型配置", error);
             }
-            const initialSystemConfig = {
-                ...defaultConfig,
-                channels,
-                imageModels: undefined,
-                videoModels: undefined,
-                textModels: undefined,
-                audioModels: undefined,
-            };
-            useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: initialSystemConfig }).config);
         } else {
             // 已有配置时也需要合并最新的系统渠道
-            const catalog = await getModelCatalog();
-            if (catalog.source === "frontend" && catalog.models) {
-                useConfigStore.getState().mergeSystemChannels(managedModelChannels(catalog.models));
-            } else if (catalog.source === "system" && catalog.channels) {
-                useConfigStore.getState().mergeSystemChannels(systemChannelModelChannels(catalog.channels));
+            try {
+                const catalog = await getModelCatalog();
+                if (catalog.source === "frontend" && catalog.models) {
+                    useConfigStore.getState().mergeSystemChannels(managedModelChannels(catalog.models));
+                } else if (catalog.source === "system" && catalog.channels) {
+                    useConfigStore.getState().mergeSystemChannels(systemChannelModelChannels(catalog.channels));
+                }
+            } catch (error) {
+                console.warn("平台模型目录加载失败，已保留当前模型配置", error);
             }
         }
         installRemoteUserDataAutoSync();
