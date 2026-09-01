@@ -30,6 +30,7 @@ import (
 )
 
 var sseFrameBoundaryPattern = regexp.MustCompile(`\r?\n\r?\n`)
+var h3DialogueLimitPattern = regexp.MustCompile(`(?i)Chinese dialogue is too long for ([0-9]+(?:\.[0-9]+)?) seconds:\s*([0-9]+) characters, maximum ([0-9]+)`)
 
 type canvasGenerationInput struct {
 	Mode            string                 `json:"mode"`
@@ -269,6 +270,9 @@ func providerPayloadErrorCategory(raw string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	if normalized == "" {
 		return "", false
+	}
+	if match := h3DialogueLimitPattern.FindStringSubmatch(raw); len(match) == 4 {
+		return fmt.Sprintf("旁白内容过长：当前视频时长 %s 秒，中文旁白 %s 字，最多 %s 字，请缩短旁白后重试", match[1], match[2], match[3]), true
 	}
 	switch {
 	// 真人肖像类目只匹配供应商错误码里的稳定标识，不扫描自然语言。

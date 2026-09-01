@@ -651,6 +651,12 @@ func TestProviderUserFacingErrorMessageClassifiesRejectedRequestBodies(t *testin
 			body:       "",
 			want:       "请检查模型和参数",
 		},
+		{
+			name:       "h3 dialogue limit gives an actionable hint",
+			statusCode: http.StatusBadRequest,
+			body:       `{"detail":"Chinese dialogue is too long for 10 seconds: 53 characters, maximum 50"}`,
+			want:       "旁白内容过长：当前视频时长 10 秒，中文旁白 53 字，最多 50 字，请缩短旁白后重试",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
