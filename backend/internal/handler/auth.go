@@ -427,6 +427,26 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"user": updated})
 	})
+	r.PATCH("/admin/users/:id/shared-library-access", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := svc.UpdateUserSharedLibraryAccess(user, c.Param("id"), req.Enabled)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"user": updated})
+	})
 	r.DELETE("/admin/users/:id", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

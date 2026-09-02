@@ -27,6 +27,7 @@ export type LocalUser = {
     identityUsername?: string;
     role: "admin" | "user";
     status: "active" | "disabled";
+    sharedLibraryEnabled: boolean;
     lastLoginAt?: string;
     createdAt: string;
     updatedAt: string;
@@ -404,7 +405,7 @@ export function getAdminFeatureAvailability() {
     return request<{ features: FeatureAvailability }>(api.get("/admin/settings/features"));
 }
 
-export function updateAdminFeatureAvailability(features: Pick<FeatureAvailability, "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers">) {
+export function updateAdminFeatureAvailability(features: Pick<FeatureAvailability, "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers" | "sharedLibraryEnabled">) {
     return request<{ features: FeatureAvailability }>(api.patch("/admin/settings/features", features));
 }
 
@@ -498,6 +499,10 @@ export function listAdminUserAuditEvents(id: string, params: { page?: number; li
 
 export function updateAdminUser(id: string, input: Partial<Pick<LocalUser, "displayName" | "email" | "role" | "status">> & { password?: string }) {
     return request<{ user: LocalUser }>(api.patch(`/admin/users/${encodeURIComponent(id)}`, input));
+}
+
+export function updateAdminUserSharedLibraryAccess(id: string, enabled: boolean) {
+    return request<{ user: LocalUser }>(api.patch(`/admin/users/${encodeURIComponent(id)}/shared-library-access`, { enabled }));
 }
 
 export function deleteAdminUser(id: string) {

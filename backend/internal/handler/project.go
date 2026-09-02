@@ -673,6 +673,39 @@ func RegisterProjectRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"asset": asset})
 	})
+	r.POST("/projects/:id/shared-assets", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req struct {
+			SharedAssetID string `json:"sharedAssetId"`
+			Version       int    `json:"version"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		asset, err := svc.LinkProjectSharedAsset(user, c.Param("id"), req.SharedAssetID, req.Version)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"asset": asset})
+	})
+	r.DELETE("/projects/:id/shared-assets/:assetId", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if err := svc.DeleteProjectSharedAsset(user, c.Param("id"), c.Param("assetId")); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"id": c.Param("assetId")})
+	})
 	r.DELETE("/projects/:id/assets/:assetId", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

@@ -11,10 +11,13 @@ type User struct {
 	SourceSystem string     `json:"sourceSystem,omitempty" gorm:"index;size:32"`
 	Role         UserRole   `json:"role" gorm:"index;size:24"`
 	Status       UserStatus `json:"status" gorm:"index;size:24"`
-	PasswordHash string     `json:"-"`
-	LastLoginAt  *time.Time `json:"lastLoginAt"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	// SharedLibraryEnabled is an explicit per-account entitlement. Administrators
+	// are authorized by role even when this value is false.
+	SharedLibraryEnabled bool       `json:"sharedLibraryEnabled" gorm:"not null;default:false;index"`
+	PasswordHash         string     `json:"-"`
+	LastLoginAt          *time.Time `json:"lastLoginAt"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
 }
 
 // InvitationCode stores only a digest. The raw code is returned once at creation time.

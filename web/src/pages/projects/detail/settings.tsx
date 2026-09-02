@@ -164,6 +164,7 @@ export default function ProjectSettingsView({ detail, refreshProject }: ProjectD
             <Modal className="workspace-modal workspace-modal-compact" title={project.status === "archived" ? "恢复项目" : "归档项目"} open={archiveOpen} okText={project.status === "archived" ? "确认恢复" : "确认归档"} cancelText="取消" okButtonProps={{ danger: project.status !== "archived", loading: archiveMutation.isPending }} onCancel={() => setArchiveOpen(false)} onOk={() => archiveMutation.mutate()} styles={{ body: { paddingTop: 12 } }}><p className="m-0 text-sm leading-6 text-foreground/65">{project.status === "archived" ? "恢复后项目会重新进入可编辑状态。" : "归档不会删除章节、画布或资产，画布文档仍可在创作画布中打开。"}</p></Modal>
             <AssetLibraryPickerModal
                 open={coverPickerOpen}
+                includeShared={false}
                 items={coverPickerItems}
                 categoryLabels={{ all: "全部图片", image: "图片" }}
                 initialCategory="image"

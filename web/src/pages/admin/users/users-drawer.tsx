@@ -1,9 +1,9 @@
-import { App, Button, Drawer, Form, Input, Select } from "antd";
+import { App, Button, Drawer, Form, Input, Select, Switch } from "antd";
 import { useEffect, useState } from "react";
 
-import { createAdminUser, updateAdminUser, type AdminUser, type LocalUser } from "@/services/api/auth";
+import { createAdminUser, updateAdminUser, updateAdminUserSharedLibraryAccess, type AdminUser, type LocalUser } from "@/services/api/auth";
 
-type UserFormValues = Pick<LocalUser, "displayName" | "email" | "role" | "status">;
+type UserFormValues = Pick<LocalUser, "displayName" | "email" | "role" | "status" | "sharedLibraryEnabled">;
 
 export function AdminUserEditDrawer({
     user,
@@ -29,6 +29,7 @@ export function AdminUserEditDrawer({
             email: user.email || "",
             role: user.role,
             status: user.status,
+            sharedLibraryEnabled: user.sharedLibraryEnabled,
         });
     }, [form, user]);
 
@@ -59,7 +60,10 @@ export function AdminUserEditDrawer({
                 role: values.role,
                 status: values.status,
             });
-            onSaved(result.user);
+            const access = Boolean(values.sharedLibraryEnabled) === user.sharedLibraryEnabled
+                ? { user: result.user }
+                : await updateAdminUserSharedLibraryAccess(user.id, Boolean(values.sharedLibraryEnabled));
+            onSaved({ ...result.user, ...access.user });
             form.resetFields();
             onClose();
             message.success("用户信息已保存");
@@ -95,6 +99,9 @@ export function AdminUserEditDrawer({
                 </Form.Item>
                 <Form.Item name="status" label="账号状态" extra={editingSelf ? "不能停用当前登录账号。" : "停用后会清除登录态，但保留身份、任务和积分流水。"}>
                     <Select disabled={editingSelf} options={[{ label: "已启用", value: "active" }, { label: "已停用", value: "disabled" }]} />
+                </Form.Item>
+                <Form.Item name="sharedLibraryEnabled" label="共享素材库权限" valuePropName="checked" extra="一个总开关同时控制查看、使用、上传和创建系列；管理员始终隐式拥有权限。">
+                    <Switch disabled={user?.role === "admin"} checkedChildren="已开通" unCheckedChildren="未开通" />
                 </Form.Item>
             </Form>
         </Drawer>

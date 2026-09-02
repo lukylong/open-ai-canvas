@@ -13,6 +13,7 @@ export type LocalUser = {
     identityUsername?: string;
     role: "admin" | "user";
     status: "active" | "disabled";
+    sharedLibraryEnabled: boolean;
     lastLoginAt?: string;
     createdAt?: string;
     updatedAt?: string;
@@ -33,6 +34,7 @@ export type FeatureAvailability = {
     frontendModelsEnabled: boolean;
     pluginCenterEnabled: boolean;
     systemPluginsVisibleToUsers: boolean;
+    sharedLibraryEnabled: boolean;
     desktopLocalChannelsEnabled: boolean;
     configured?: boolean;
     updatedBy?: string;
@@ -47,6 +49,7 @@ export const defaultFeatureAvailability: FeatureAvailability = {
     frontendModelsEnabled: false,
     pluginCenterEnabled: true,
     systemPluginsVisibleToUsers: true,
+    sharedLibraryEnabled: false,
     desktopLocalChannelsEnabled: false,
 };
 

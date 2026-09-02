@@ -1,6 +1,6 @@
 import { Button, Dropdown, Modal } from "antd";
 import type { MenuProps } from "antd";
-import { Check, ChevronDown, FileText, FolderOpen, HardDrive, Image as ImageIcon, LoaderCircle, Music2, Puzzle, Search, Upload, UserRound, Video } from "lucide-react";
+import { Check, ChevronDown, FileText, FolderOpen, HardDrive, Image as ImageIcon, Images, LoaderCircle, Music2, Puzzle, Search, Upload, UserRound, Video } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AssetMediaPreview } from "@/components/asset-media-preview";
@@ -10,6 +10,8 @@ import { PaginationBar } from "@/components/layout/workspace-page";
 import { cn } from "@/lib/utils";
 import type { ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
 import type { Asset } from "@/stores/use-asset-store";
+import { listSharedAssets, type AssetReference, type SharedAsset } from "@/services/api/shared-library";
+import { useUserStore } from "@/stores/use-user-store";
 
 export type AssetLibraryPickerItem = {
     id: string;
@@ -25,6 +27,8 @@ export type AssetLibraryPickerItem = {
     disabledReason?: string;
     folderId?: string;
     external?: ExternalAssetPickerReference;
+    shared?: SharedAsset;
+    assetReference?: AssetReference;
 };
 
 export type AssetLibraryPickerFolder = {
@@ -63,7 +67,8 @@ type Props = {
         };
     };
     onClose: () => void;
-    onConfirm: (ids: string[]) => Promise<void> | void;
+    includeShared?: boolean;
+    onConfirm: (ids: string[], selectedItems: AssetLibraryPickerItem[]) => Promise<void> | void;
     onFolderAction?: (folderId: string) => Promise<void> | void;
 };
 
@@ -90,10 +95,14 @@ export function AssetLibraryPickerModal({
     onClose,
     onConfirm,
     onFolderAction,
+    includeShared = true,
 }: Props) {
     const [category, setCategory] = useState(initialCategory);
     const [folderId, setFolderId] = useState(initialFolderId);
-    const [source, setSource] = useState<"local" | "plugin">("local");
+    const user = useUserStore((state) => state.user);
+    const sharedFeature = useUserStore((state) => state.features.sharedLibraryEnabled);
+    const canUseShared = includeShared && sharedFeature && Boolean(user && (user.role === "admin" || user.sharedLibraryEnabled));
+    const [source, setSource] = useState<"local" | "shared" | "plugin">("local");
     const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
     const [keyword, setKeyword] = useState("");
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -101,22 +110,24 @@ export function AssetLibraryPickerModal({
     const [working, setWorking] = useState(false);
     const [uploadingCount, setUploadingCount] = useState(0);
     const [error, setError] = useState("");
+    const [sharedItems, setSharedItems] = useState<AssetLibraryPickerItem[]>([]);
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const initialSelectedIdsRef = useRef(initialSelectedIds);
     const itemsRef = useRef(items);
     initialSelectedIdsRef.current = initialSelectedIds;
     const allItems = useMemo(() => {
         const known = new Set(items.map((item) => item.id));
-        return [...items, ...uploadedItems.filter((item) => !known.has(item.id))];
-    }, [items, uploadedItems]);
+        return [...items, ...uploadedItems.filter((item) => !known.has(item.id)), ...sharedItems];
+    }, [items, sharedItems, uploadedItems]);
     itemsRef.current = allItems;
-    const localItems = useMemo(() => allItems.filter((item) => !item.external), [allItems]);
+    const localItems = useMemo(() => allItems.filter((item) => !item.external && !item.shared), [allItems]);
     const pluginItems = useMemo(() => allItems.filter((item) => Boolean(item.external)), [allItems]);
+    const sharedSourceItems = useMemo(() => allItems.filter((item) => Boolean(item.shared)), [allItems]);
     const hasPluginSource = useMemo(
         () => Object.keys(categoryLabels).some((value) => value.startsWith("external:")) || pluginItems.some((item) => item.category.startsWith("external:")),
         [categoryLabels, pluginItems],
     );
-    const sourceItems = source === "plugin" ? pluginItems : localItems;
+    const sourceItems = source === "plugin" ? pluginItems : source === "shared" ? sharedSourceItems : localItems;
     const sourceFolders = source === "plugin" ? folders : [];
     const showCategories = source === "local" || !sourceFolders.length;
     const categories = useMemo(() => ["all", ...Array.from(new Set(sourceItems.map((item) => item.category || "other")))], [sourceItems]);
@@ -149,17 +160,32 @@ export function AssetLibraryPickerModal({
     }, [initialCategory, initialFolderId, open]);
 
     useEffect(() => {
+        if (!open || !canUseShared) { setSharedItems([]); return; }
+        let active = true;
+        void listSharedAssets().then(({ assets }) => {
+            if (!active) return;
+            setSharedItems(assets.map((asset) => ({
+                id: `shared:${asset.id}`, title: asset.title, category: "image", kindLabel: "共享图片", shared: asset,
+                assetReference: { source: "shared", sharedAssetId: asset.id, version: asset.version },
+                imageUrl: `/api/shared-library/assets/${encodeURIComponent(asset.id)}/thumbnail`, description: "共享素材 · 使用时重新校验权限",
+            })));
+        }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "读取共享素材失败"); });
+        return () => { active = false; };
+    }, [canUseShared, open]);
+
+    useEffect(() => {
         if (category === "all" || categories.includes(category)) return;
         setCategory("all");
     }, [categories, category]);
 
     useEffect(() => {
-        if (hasPluginSource || source === "local") return;
+        if ((hasPluginSource && source === "plugin") || (canUseShared && source === "shared") || source === "local") return;
         setSource("local");
-    }, [hasPluginSource, source]);
+    }, [canUseShared, hasPluginSource, source]);
 
-    const selectSource = (nextSource: "local" | "plugin") => {
+    const selectSource = (nextSource: "local" | "shared" | "plugin") => {
         if (nextSource === "plugin" && !hasPluginSource) return;
+        if (nextSource === "shared" && !canUseShared) return;
         setSource(nextSource);
         setCategory("all");
         setFolderId("all");
@@ -183,7 +209,7 @@ export function AssetLibraryPickerModal({
         setWorking(true);
         setError("");
         try {
-            await onConfirm(selectedIds);
+            await onConfirm(selectedIds, selectedIds.flatMap((id) => allItems.find((item) => item.id === id) || []));
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : "素材操作失败，请重试");
         } finally {
@@ -229,9 +255,10 @@ export function AssetLibraryPickerModal({
     };
 
     const countFor = (value: string) => value === "all" ? sourceItems.length : sourceItems.filter((item) => item.category === value).length;
-    const sourceLabel = source === "plugin" ? "插件来源" : "本地素材";
+    const sourceLabel = source === "plugin" ? "插件来源" : source === "shared" ? "共享素材" : "本地素材";
     const sourceMenuItems: MenuProps["items"] = [
         { key: "local", icon: <HardDrive aria-hidden="true" />, label: <span className="asset-picker-source-menu-label"><span>本地素材</span><em>{localItems.length}</em></span> },
+        ...(canUseShared ? [{ key: "shared", icon: <Images aria-hidden="true" />, label: <span className="asset-picker-source-menu-label"><span>共享素材</span><em>{sharedSourceItems.length}</em></span> }] : []),
         ...(hasPluginSource ? [{ key: "plugin", icon: <Puzzle aria-hidden="true" />, label: <span className="asset-picker-source-menu-label"><span>插件来源</span><em>{pluginItems.length}</em></span> }] : []),
     ];
     const activeUpload = source === "plugin" ? upload?.external : upload;
@@ -266,7 +293,7 @@ export function AssetLibraryPickerModal({
                                     selectedKeys: [source],
                                     items: sourceMenuItems,
                                     onClick: ({ key }) => {
-                                        if (key === "local" || key === "plugin") selectSource(key);
+                                        if (key === "local" || key === "shared" || key === "plugin") selectSource(key);
                                     },
                                 }}
                             >

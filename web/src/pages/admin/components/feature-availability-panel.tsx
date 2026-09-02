@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { App, Button, Skeleton, Switch } from "antd";
-import { AlertTriangle, Clapperboard, Coins, ListChecks, LockKeyhole, MonitorCog, PlugZap, RadioTower, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, Clapperboard, Coins, Images, ListChecks, LockKeyhole, MonitorCog, PlugZap, RadioTower, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { getAdminFeatureAvailability, updateAdminFeatureAvailability } from "@/services/api/auth";
 import { useUserStore, type FeatureAvailability } from "@/stores/use-user-store";
 import { AdminStatusBadge } from "./admin-ui";
 
-type FeatureKey = "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers";
+type FeatureKey = "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers" | "sharedLibraryEnabled";
 type FeatureRow = {
     key: FeatureKey;
     title: string;
@@ -16,7 +16,7 @@ type FeatureRow = {
     dependsOn?: FeatureKey;
 };
 
-const editableFeatureKeys: FeatureKey[] = ["shortDramaEnabled", "taskCenterEnabled", "creditsEnabled", "customChannelsEnabled", "frontendModelsEnabled", "pluginCenterEnabled", "systemPluginsVisibleToUsers"];
+const editableFeatureKeys: FeatureKey[] = ["shortDramaEnabled", "taskCenterEnabled", "creditsEnabled", "customChannelsEnabled", "frontendModelsEnabled", "pluginCenterEnabled", "systemPluginsVisibleToUsers", "sharedLibraryEnabled"];
 
 const workspaceFeatureRows: FeatureRow[] = [
     {
@@ -42,6 +42,12 @@ const workspaceFeatureRows: FeatureRow[] = [
         title: "自定义渠道",
         description: "允许用户配置并使用自己的模型渠道。",
         icon: <RadioTower className="size-4" aria-hidden="true" />,
+    },
+    {
+        key: "sharedLibraryEnabled",
+        title: "共享素材库",
+        description: "全局止损开关。关闭后列表、预览、文件和已有生成引用立即停止读取。",
+        icon: <Images className="size-4" aria-hidden="true" />,
     },
 ];
 
@@ -244,7 +250,7 @@ export default function FeatureAvailabilityPanel() {
                     title="1. 用户工作台入口"
                     description="先决定普通用户能进入哪些核心工作区"
                     icon={<MonitorCog className="size-4" aria-hidden="true" />}
-                    status={<AdminStatusBadge label={`${enabledWorkspaceFeatures}/4 开放`} tone={enabledWorkspaceFeatures === 4 ? "success" : "neutral"} />}
+                    status={<AdminStatusBadge label={`${enabledWorkspaceFeatures}/${workspaceFeatureRows.length} 开放`} tone={enabledWorkspaceFeatures === workspaceFeatureRows.length ? "success" : "neutral"} />}
                 >
                     {workspaceFeatureRows.map((row) => (
                         <FeatureSettingRow key={row.key} row={row} saved={savedFeatures} draft={draftFeatures} saving={saving} onChange={requestFeatureChange} />
@@ -366,6 +372,7 @@ function toEditablePayload(features: FeatureAvailability) {
         frontendModelsEnabled: features.frontendModelsEnabled,
         pluginCenterEnabled: features.pluginCenterEnabled,
         systemPluginsVisibleToUsers: features.systemPluginsVisibleToUsers,
+        sharedLibraryEnabled: features.sharedLibraryEnabled,
     };
 }
 
@@ -387,6 +394,7 @@ function parseFeatureAvailability(value: unknown): FeatureAvailability {
         frontendModelsEnabled: record.frontendModelsEnabled as boolean,
         pluginCenterEnabled: record.pluginCenterEnabled as boolean,
         systemPluginsVisibleToUsers: record.systemPluginsVisibleToUsers as boolean,
+        sharedLibraryEnabled: record.sharedLibraryEnabled as boolean,
         desktopLocalChannelsEnabled: record.desktopLocalChannelsEnabled === true,
         configured: typeof record.configured === "boolean" ? record.configured : undefined,
         updatedBy: typeof record.updatedBy === "string" ? record.updatedBy : undefined,

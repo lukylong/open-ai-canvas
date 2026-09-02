@@ -69,5 +69,7 @@ describe("asset series", () => {
         expect(source).toContain("series_id: series.seriesId");
         expect(styles).toContain(".assets-view-switch > button.is-active");
         expect(styles).toContain(".asset-series-card .assets-select-check { opacity: 1; }");
+        expect(styles).toContain(".asset-series-card-type { flex: 0 0 auto; white-space: nowrap; }");
+        expect(styles).toContain(".asset-series-card-id { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }");
     });
 });

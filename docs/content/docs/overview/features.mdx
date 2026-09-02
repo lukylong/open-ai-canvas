@@ -87,6 +87,18 @@ description: 影策当前已实现的核心工作台能力与使用入口
 - `backend/internal/service/eagle.go`：Eagle 响应解析和集合字段归一化。
 - `web/src/lib/plugins/builtin/eagle.ts`：外部素材映射、预览和引用处理。
 
+## 共享系列素材库
+
+管理员可以通过全局功能开关和账号级权限，为指定账号开放共享图片的查看、引用、上传及创建系列。开放账号在素材库中切换“我的素材 / 共享素材”，也可以在画布、创作参考图和项目资产选择器中直接使用共享素材。
+
+- 支持 JPG、PNG、WebP 单张或最多 1000 张批量上传；单张最大 50MB，普通批次合计最大 5GB。
+- 支持最大 2GB 的 ZIP 系列包；浏览器只预检中央目录，后台 Worker 流式解压，最多导入 1000 张/5GB。
+- 上传批次持久化并支持原文件清单恢复；成功文件不会重传，失败文件可重新选择后续传。
+- ZIP 拒绝加密、路径穿越、符号链接、超过 5000 条目和超过 100:1 压缩比；损坏图片按项跳过并返回明细。
+- 共享引用使用素材 ID 和版本，不复制到个人素材库；每次预览、文件读取和任务提交都会重新校验权限。
+
+相关实现位于 `backend/internal/service/shared_library.go`、`backend/internal/repository/shared_library.go`、`web/src/services/api/shared-library.ts` 和 `web/src/pages/assets/index.tsx`。
+
 ## 自由空白画布起点
 
 新建且没有节点的自由画布会显示“从哪里开始”引导。除短剧流水线和 Agent 生成外，用户可以选择“自由空白画布”，在不预设工作流的情况下开始创作。

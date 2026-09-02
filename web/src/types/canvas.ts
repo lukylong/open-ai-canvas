@@ -3,6 +3,7 @@ import type { AssetCategory } from "@/lib/asset-category";
 import type { PortraitTextureSettings } from "@/lib/canvas/canvas-portrait-texture";
 import type { StyleExecutionPlan } from "@/lib/canvas/style-profile";
 import type { PortraitClearanceNodeState } from "@/lib/portrait-clearance/contracts";
+import type { AssetReference } from "@/services/api/shared-library";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@/types/timeline";
 
 export type Position = {
@@ -256,6 +257,7 @@ export type CanvasNodeMetadata = {
     /** Whether the video file contains an audio track when this is known. */
     hasAudio?: boolean;
     assetId?: string;
+    assetReference?: AssetReference;
     assetTags?: string[];
     assetCategory?: AssetCategory;
     workflowKind?: CanvasWorkflowKind;

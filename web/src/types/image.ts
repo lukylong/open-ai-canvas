@@ -1,4 +1,5 @@
 import type { CanvasColorGrade } from "@/lib/canvas/canvas-color-grade";
+import type { AssetReference } from "@/services/api/shared-library";
 
 export type ReferenceImage = {
     id: string;
@@ -10,6 +11,7 @@ export type ReferenceImage = {
     bytes?: number;
     width?: number;
     height?: number;
+    assetReference?: AssetReference;
     // 参考图的来源：需要在真正生成时才落地成资源的那几类。
     // 判别字段是 kind——新增一类时，canvas-node-generation 里的分派也要跟着加分支，
     // 漏了会静默按普通图片处理（dataUrl 为空 → 参考图丢失）。

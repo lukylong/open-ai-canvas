@@ -398,12 +398,34 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 }
 
 func (s *Service) storeResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader) (*model.Resource, error) {
-	now := time.Now()
-	kind = normalizeResourceKind(kind, mimeType)
 	setting, storageSettingID, useOSS, err := s.activeResourceOSSSetting(userID)
 	if err != nil {
 		return nil, err
 	}
+	return s.storeResourceWithSetting(userID, kind, fileName, mimeType, size, width, height, durationMs, body, setting, storageSettingID, useOSS)
+}
+
+// storeSharedResource deliberately uses the platform location instead of a user's
+// personal OSS so shared assets remain administratively recoverable and portable.
+func (s *Service) storeSharedResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader) (*model.Resource, error) {
+	_, setting, err := s.readOSSSetting()
+	if err != nil {
+		return nil, err
+	}
+	useOSS := setting.Enabled
+	if useOSS {
+		setting, err = validateActiveOSSSetting(setting, "管理员尚未启用 OSS", "平台 OSS 配置不完整，请联系管理员")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s.storeResourceWithSetting(userID, kind, fileName, mimeType, size, width, height, durationMs, body, setting, setting.StorageLocationID, useOSS)
+}
+
+func (s *Service) storeResourceWithSetting(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader, setting ossSettingValue, storageSettingID string, useOSS bool) (*model.Resource, error) {
+	var err error
+	now := time.Now()
+	kind = normalizeResourceKind(kind, mimeType)
 	provider := "local"
 	objectKey := localObjectKey(userID, kind, fileName, mimeType, now)
 	resource := model.Resource{ID: newID(), UserID: userID, Kind: kind, Status: model.ResourceStatusPending, Provider: provider, ObjectKey: objectKey, MimeType: mimeType, Size: size, Width: width, Height: height, DurationMs: durationMs, CreatedAt: now, UpdatedAt: now}

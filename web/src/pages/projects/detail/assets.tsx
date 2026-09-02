@@ -27,6 +27,7 @@ import {
     deleteProjectAssetFolder,
     getProjectCharacter,
     linkProjectAsset,
+    linkProjectSharedAsset,
     listProjectAssetCandidates,
     listProjectAssetFolders,
     listProjectAssetsPage,
@@ -34,6 +35,7 @@ import {
     replaceProjectCharacterRepresentations,
     unbindProjectCharacterVoice,
     unlinkProjectAsset,
+    unlinkProjectSharedAsset,
     updateProjectAssetCategory,
     updateProjectAssetFolder,
     updateProjectCharacter,
@@ -211,9 +213,10 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
     const done = (content: string) => { refreshProject(); message.success(content); };
     const failed = (fallback: string) => (error: unknown) => message.error(error instanceof Error ? error.message : fallback);
     const addMutation = useMutation({
-        mutationFn: async ({ ids, nextFolderId }: { ids: string[]; nextFolderId?: string }) => {
+        mutationFn: async ({ ids, nextFolderId, pickerItems = availablePickerItems }: { ids: string[]; nextFolderId?: string; pickerItems?: AssetLibraryPickerItem[] }) => {
             const result = await linkSelectedProjectAssets(ids, async (id) => {
-                const pickerItem = availablePickerItems.find((item) => item.id === id);
+                const pickerItem = pickerItems.find((item) => item.id === id);
+                if (pickerItem?.shared) return linkProjectSharedAsset(detail.project.id, { sharedAssetId: pickerItem.shared.id, version: pickerItem.shared.version });
                 if (pickerItem?.external) {
                     const imported = await externalAssetSources.importExternalAsset(pickerItem.external);
                     const assetId = addAsset(imported);
@@ -246,7 +249,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
         onError: failed("资产引用失败"),
     });
     const versionMutation = useMutation({ mutationFn: (id: string) => createProjectAssetVersion(detail.project.id, id, {}), onSuccess: () => done("已创建新版本"), onError: failed("版本创建失败") });
-    const unlinkMutation = useMutation({ mutationFn: (id: string) => unlinkProjectAsset(detail.project.id, id), onSuccess: () => done("资产已移出项目"), onError: failed("资产移除失败") });
+    const unlinkMutation = useMutation({ mutationFn: (id: string) => id.startsWith("shared:") ? unlinkProjectSharedAsset(detail.project.id, id.slice(7)) : unlinkProjectAsset(detail.project.id, id), onSuccess: () => done("资产已移出项目"), onError: failed("资产移除失败") });
     const categoryMutation = useMutation({ mutationFn: ({ id, next }: { id: string; next: AssetCategory }) => updateProjectAssetCategory(detail.project.id, id, next), onSuccess: ({ asset }) => { updatePersonalAsset(asset.id, { category: asset.category }); done("资产分类已更新"); }, onError: failed("资产分类更新失败") });
     const moveMutation = useMutation({ mutationFn: ({ id, nextFolderId }: { id: string; nextFolderId: string }) => moveProjectAsset(detail.project.id, id, nextFolderId), onSuccess: () => done("资产已移动"), onError: failed("资产移动失败") });
     const createFolderMutation = useMutation({
@@ -451,8 +454,8 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
                 emptyTitle="没有可引用的素材"
                 emptyDescription="本地素材已全部加入项目，或切换到插件来源选择外部素材。"
                 onClose={() => setAddOpen(false)}
-                onConfirm={async (ids) => {
-                    await addMutation.mutateAsync({ ids, nextFolderId: folderId === ALL_FOLDERS ? undefined : folderId });
+                onConfirm={async (ids, selectedItems) => {
+                    await addMutation.mutateAsync({ ids, pickerItems: [...availablePickerItems, ...selectedItems.filter((item) => item.shared)], nextFolderId: folderId === ALL_FOLDERS ? undefined : folderId });
                 }}
             />
             <ProjectAssetPreviewModal asset={previewAsset} personalAsset={previewAsset ? personalAssets.find((item) => item.id === previewAsset.id) : undefined} onClose={() => setPreviewAsset(null)} onDownload={() => previewAsset && downloadPreviewAsset(previewAsset)} onReplaceImage={() => { if (!previewAsset || previewAsset.category !== "character") return; setPreviewAsset(null); openImages(previewAsset); }} />
@@ -462,6 +465,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
             </Modal>
             <AssetLibraryPickerModal
                 open={Boolean(imageAsset)}
+                includeShared={false}
                 items={imagePickerItems}
                 categoryLabels={{ ...pickerCategoryLabels, ...externalAssetSources.categoryLabels }}
                 folders={externalAssetSources.folders}
@@ -480,6 +484,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
             />
             <AssetLibraryPickerModal
                 open={voicePickerOpen}
+                includeShared={false}
                 items={audioPickerItems}
                 categoryLabels={{ all: "全部音频", audio: "声音素材" }}
                 initialCategory="audio"
@@ -574,7 +579,10 @@ function projectAssetCanvasPreviewNode(asset: ProjectAsset, personalAsset: Asset
                     : personalAsset?.kind === "text"
                         ? personalAsset.data.content
                     : projectAssetRemoteUrl(asset) || asset.previewText || "";
-    return { id: asset.id, type, title: asset.title, position: { x: index * 24, y: index * 18 }, width: 240, height: 160, metadata: { content, assetId: asset.id } };
+    const assetReference = asset.sharedAssetId
+        ? { source: "shared" as const, sharedAssetId: asset.sharedAssetId, version: asset.sharedVersion || 1 }
+        : undefined;
+    return { id: asset.id, type, title: asset.title, position: { x: index * 24, y: index * 18 }, width: 240, height: 160, metadata: { content, assetId: asset.id, assetReference } };
 }
 
 function projectAssetFolderStyle(style?: string): CanvasFolderStyle {
@@ -582,6 +590,7 @@ function projectAssetFolderStyle(style?: string): CanvasFolderStyle {
 }
 
 function projectAssetRemoteUrl(asset: ProjectAsset) {
+    if (asset.previewUrl) return asset.previewUrl;
     const resourceId = resourceIdFromStorageKey(asset.storageKey);
     return resourceId ? resourceFileUrl(resourceId) : "";
 }
@@ -661,7 +670,8 @@ function CharacterEditorModal({ open, editing, form, loading, onClose, onSave }:
 type CharacterFormKey = (typeof characterFields)[number][0];
 
 function MediaAssetCard({ asset, personalAsset, folderItems, onOpen, onMove, onCategoryChange, onVersion, onRemove, loading }: { asset: ProjectAsset; personalAsset?: Asset; folderItems: Array<{ key: string; label: string }>; onOpen: () => void; onMove: (folderId: string) => void; onCategoryChange: (category: AssetCategory) => void; onVersion: () => void; onRemove: () => void; loading: boolean }) {
-    return <AssetLibraryCard className="project-asset-library-card"><AssetLibraryCardMedia className="relative aspect-[4/3] overflow-hidden bg-foreground/[.05]"><button type="button" className="project-asset-media-button" onClick={onOpen} aria-label={`查看资产：${asset.title}`}><ProjectAssetMedia asset={asset} personalAsset={personalAsset} /><div className="absolute inset-x-2 top-2 flex items-center justify-between"><StatusPill status={asset.status} /><span className="rounded bg-black/50 px-1.5 py-0.5 text-[var(--fs-micro)] text-white">{mediaLabel(asset.mediaType)}</span></div></button></AssetLibraryCardMedia><div className="p-2.5"><button type="button" className="project-asset-title-button" onClick={onOpen}><span className="min-w-0 truncate text-xs font-medium">{asset.title}</span><span className="shrink-0 text-[var(--fs-micro)] text-foreground/38">{formatTime(asset.updatedAt)}</span></button><div className="mt-1 flex items-center gap-1.5 text-[var(--fs-tiny)] text-foreground/42"><Dropdown trigger={["click"]} menu={{ selectedKeys: [asset.category], items: Object.entries(categoryLabels).filter(([value]) => value !== "character").map(([value, label]) => ({ key: value, label })), onClick: ({ key }) => onCategoryChange(normalizeAssetCategory(key)) }}><button type="button" disabled={loading} className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[var(--fs-tiny)] text-foreground/50 hover:bg-surface-hover"><span>{categoryLabel(asset.category)}</span><ChevronDown className="size-3" /></button></Dropdown><span>·</span><span>v{Math.max(1, asset.versionCount)}</span><Link2 className="ml-auto size-3.5 shrink-0 text-foreground/42" /></div><div className="mt-2 flex items-center justify-between gap-2 pt-1"><span className="text-[var(--fs-micro)] text-foreground/38">{mediaLabel(asset.mediaType)}</span><div className="flex items-center"><Dropdown trigger={["click"]} menu={{ selectedKeys: [asset.folderId || ""], items: folderItems, onClick: ({ key }) => onMove(key) }}><Button type="text" size="small" icon={<MoveRight className="size-3.5" />} loading={loading} aria-label={`移动 ${asset.title}`} /></Dropdown><Button type="text" size="small" icon={<RefreshCw className="size-3.5" />} loading={loading} onClick={onVersion} aria-label={`为 ${asset.title} 创建版本`} /><Popconfirm title="移出项目资产？" okText="移出" cancelText="取消" onConfirm={onRemove}><Button type="text" danger size="small" icon={<Trash2 className="size-3.5" />} loading={loading} aria-label={`移出 ${asset.title}`} /></Popconfirm></div></div></div></AssetLibraryCard>;
+    const shared = asset.source === "shared";
+    return <AssetLibraryCard className="project-asset-library-card"><AssetLibraryCardMedia className="relative aspect-[4/3] overflow-hidden bg-foreground/[.05]"><button type="button" className="project-asset-media-button" onClick={onOpen} aria-label={`查看资产：${asset.title}`}><ProjectAssetMedia asset={asset} personalAsset={personalAsset} /><div className="absolute inset-x-2 top-2 flex items-center justify-between"><StatusPill status={asset.status} /><span className="rounded bg-black/50 px-1.5 py-0.5 text-[var(--fs-micro)] text-white">{shared ? "共享图片" : mediaLabel(asset.mediaType)}</span></div></button></AssetLibraryCardMedia><div className="p-2.5"><button type="button" className="project-asset-title-button" onClick={onOpen}><span className="min-w-0 truncate text-xs font-medium">{asset.title}</span><span className="shrink-0 text-[var(--fs-micro)] text-foreground/38">{formatTime(asset.updatedAt)}</span></button><div className="mt-1 flex items-center gap-1.5 text-[var(--fs-tiny)] text-foreground/42">{shared ? <span>稳定引用 · v{asset.sharedVersion || 1}</span> : <Dropdown trigger={["click"]} menu={{ selectedKeys: [asset.category], items: Object.entries(categoryLabels).filter(([value]) => value !== "character").map(([value, label]) => ({ key: value, label })), onClick: ({ key }) => onCategoryChange(normalizeAssetCategory(key)) }}><button type="button" disabled={loading} className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[var(--fs-tiny)] text-foreground/50 hover:bg-surface-hover"><span>{categoryLabel(asset.category)}</span><ChevronDown className="size-3" /></button></Dropdown>}<Link2 className="ml-auto size-3.5 shrink-0 text-foreground/42" /></div><div className="mt-2 flex items-center justify-between gap-2 pt-1"><span className="text-[var(--fs-micro)] text-foreground/38">{mediaLabel(asset.mediaType)}</span><div className="flex items-center">{shared ? null : <><Dropdown trigger={["click"]} menu={{ selectedKeys: [asset.folderId || ""], items: folderItems, onClick: ({ key }) => onMove(key) }}><Button type="text" size="small" icon={<MoveRight className="size-3.5" />} loading={loading} aria-label={`移动 ${asset.title}`} /></Dropdown><Button type="text" size="small" icon={<RefreshCw className="size-3.5" />} loading={loading} onClick={onVersion} aria-label={`为 ${asset.title} 创建版本`} /></>}<Popconfirm title="移出项目资产？" okText="移出" cancelText="取消" onConfirm={onRemove}><Button type="text" danger size="small" icon={<Trash2 className="size-3.5" />} loading={loading} aria-label={`移出 ${asset.title}`} /></Popconfirm></div></div></div></AssetLibraryCard>;
 }
 
 function ProjectAssetMedia({ asset, personalAsset }: { asset: ProjectAsset; personalAsset?: Asset }) {

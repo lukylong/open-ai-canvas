@@ -2,6 +2,7 @@ import type { UploadedFile } from "@/services/file-storage";
 import type { UploadedImage } from "@/services/image-storage";
 import { canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import type { ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
+import type { SharedAsset } from "@/services/api/shared-library";
 import type { Asset, AudioAsset, ImageAsset, NewAsset } from "@/stores/use-asset-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -163,6 +164,15 @@ export function creationAttachmentFromAsset(asset: ImageAsset): CreationAttachme
         width: asset.data.width,
         height: asset.data.height,
         previewUrl: url,
+    };
+}
+
+export function creationAttachmentFromSharedAsset(asset: SharedAsset): CreationAttachment {
+    const url = `/api/shared-library/assets/${encodeURIComponent(asset.id)}/file`;
+    return {
+        id: `shared:${asset.id}`, name: asset.title || "共享素材图片", type: asset.mimeType, dataUrl: url, url,
+        bytes: asset.size, width: asset.width, height: asset.height, previewUrl: url,
+        assetReference: { source: "shared", sharedAssetId: asset.id, version: asset.version },
     };
 }
 

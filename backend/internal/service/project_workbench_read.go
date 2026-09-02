@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"infinite-canvas/backend/internal/model"
 
 	"golang.org/x/sync/errgroup"
@@ -392,6 +394,50 @@ func (s *Service) ProjectAssetsPage(userID string, projectID string, page int, p
 	if err := group.Wait(); err != nil {
 		return ProjectAssetPage{}, err
 	}
+	sharedRecords, err := s.repo.ProjectSharedAssets(projectID)
+	if err != nil {
+		return ProjectAssetPage{}, err
+	}
+	if len(sharedRecords) > 0 {
+		user, userErr := s.repo.User(userID)
+		if userErr != nil {
+			return ProjectAssetPage{}, userErr
+		}
+		if accessErr := s.RequireSharedLibraryAccess(user); accessErr != nil {
+			return ProjectAssetPage{}, accessErr
+		}
+	}
+	sharedMatches := make([]ProjectAssetSummary, 0, len(sharedRecords))
+	for _, record := range sharedRecords {
+		if record.Asset.Status != model.SharedAssetReady || (mediaType != "" && mediaType != "image") || (status != "" && status != string(model.AssetVersionStatusConfirmed)) {
+			continue
+		}
+		if category != "" && category != string(model.AssetCategoryOther) {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(record.Asset.Title), strings.ToLower(query)) {
+			continue
+		}
+		if folderID != nil && *folderID != "" {
+			continue
+		}
+		sharedMatches = append(sharedMatches, ProjectAssetSummary{ID: "shared:" + record.Asset.ID, Title: record.Asset.Title, MediaType: "image", Category: model.AssetCategoryOther,
+			Status: model.AssetVersionStatusConfirmed, VersionCount: 1, Usages: []string{"shared-library"}, Source: "shared", SharedAssetID: record.Asset.ID,
+			SharedVersion: record.Link.Version, PreviewURL: "/api/shared-library/assets/" + record.Asset.ID + "/thumbnail", UpdatedAt: record.Asset.UpdatedAt})
+	}
+	personalTotal := total
+	pageOffset := int64((page - 1) * pageSize)
+	if len(summaries) < pageSize {
+		sharedOffset := max(int64(0), pageOffset-personalTotal)
+		if pageOffset < personalTotal {
+			sharedOffset = 0
+		}
+		if sharedOffset < int64(len(sharedMatches)) {
+			end := min(len(sharedMatches), int(sharedOffset)+pageSize-len(summaries))
+			summaries = append(summaries, sharedMatches[int(sharedOffset):end]...)
+		}
+	}
+	total = personalTotal + int64(len(sharedMatches))
 	categoryRows, folderRows, err := s.repo.ProjectAssetFacets(projectID)
 	if err != nil {
 		return ProjectAssetPage{}, err
@@ -400,6 +446,7 @@ func (s *Service) ProjectAssetsPage(userID string, projectID string, page int, p
 	for _, row := range categoryRows {
 		categoryCounts[row.Key] = row.Count
 	}
+	categoryCounts[string(model.AssetCategoryOther)] += int64(len(sharedMatches))
 	folderCounts := make(map[string]int64, len(folderRows))
 	for _, row := range folderRows {
 		folderCounts[row.Key] = row.Count

@@ -21,6 +21,7 @@ const (
 	FeatureFrontendModels = "frontendModels"
 	FeaturePluginCenter   = "pluginCenter"
 	FeatureSystemPlugins  = "systemPluginsVisibleToUsers"
+	FeatureSharedLibrary  = "sharedLibrary"
 )
 
 type FeatureAvailability struct {
@@ -31,6 +32,7 @@ type FeatureAvailability struct {
 	FrontendModelsEnabled       bool `json:"frontendModelsEnabled"`
 	PluginCenterEnabled         bool `json:"pluginCenterEnabled"`
 	SystemPluginsVisibleToUsers bool `json:"systemPluginsVisibleToUsers"`
+	SharedLibraryEnabled        bool `json:"sharedLibraryEnabled"`
 }
 
 type PublicFeatureAvailability struct {
@@ -51,6 +53,7 @@ func defaultFeatureAvailability() FeatureAvailability {
 		FrontendModelsEnabled:       false,
 		PluginCenterEnabled:         true,
 		SystemPluginsVisibleToUsers: true,
+		SharedLibraryEnabled:        false,
 	}
 }
 
@@ -114,6 +117,8 @@ func (s *Service) FeatureEnabled(feature string) (bool, error) {
 		return value.PluginCenterEnabled, nil
 	case FeatureSystemPlugins:
 		return value.SystemPluginsVisibleToUsers, nil
+	case FeatureSharedLibrary:
+		return value.SharedLibraryEnabled, nil
 	default:
 		return false, errors.New("未知功能开放配置")
 	}
@@ -142,6 +147,8 @@ func (s *Service) RequireFeature(feature string) error {
 		return Forbidden("插件中心暂未开放")
 	case FeatureSystemPlugins:
 		return Forbidden("系统插件暂未向普通用户展示")
+	case FeatureSharedLibrary:
+		return Forbidden("共享素材库暂未开放")
 	default:
 		return Forbidden("该功能暂未开放")
 	}

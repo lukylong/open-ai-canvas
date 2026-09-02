@@ -137,6 +137,7 @@ func (s *Service) StartWorker() {
 	s.taskWorker().start(ctx)
 	s.startResourceDeletionWorker(ctx)
 	s.startSkillSyncWorker(ctx)
+	s.startSharedLibraryWorker(ctx)
 }
 
 func (s *Service) BeginDrain() { s.backgroundWorkers().beginDrain() }

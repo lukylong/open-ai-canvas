@@ -40,6 +40,10 @@ type ProjectAssetSummary struct {
 	PreviewText      string                   `json:"previewText,omitempty"`
 	UpdatedAt        time.Time                `json:"updatedAt"`
 	Character        *CharacterCardSummary    `json:"character,omitempty"`
+	Source           string                   `json:"source,omitempty"`
+	SharedAssetID    string                   `json:"sharedAssetId,omitempty"`
+	SharedVersion    int                      `json:"sharedVersion,omitempty"`
+	PreviewURL       string                   `json:"previewUrl,omitempty"`
 }
 
 type ProjectAssetFilter struct {
@@ -90,7 +94,60 @@ func (s *Service) ProjectAssets(userID string, projectID string) ([]ProjectAsset
 		}
 		result = append(result, summary)
 	}
+	sharedLinks, err := s.repo.ProjectSharedAssets(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(sharedLinks) > 0 {
+		user, userErr := s.repo.User(userID)
+		if userErr != nil {
+			return nil, userErr
+		}
+		if accessErr := s.RequireSharedLibraryAccess(user); accessErr != nil {
+			return nil, accessErr
+		}
+	}
+	for _, record := range sharedLinks {
+		if record.Asset.Status != model.SharedAssetReady {
+			continue
+		}
+		series, seriesErr := s.repo.SharedAssetSeries(record.Asset.SeriesID)
+		if seriesErr != nil || series.Status != model.SharedAssetSeriesReady {
+			continue
+		}
+		result = append(result, ProjectAssetSummary{ID: "shared:" + record.Asset.ID, Title: record.Asset.Title, MediaType: "image", Category: model.AssetCategoryOther,
+			Status: model.AssetVersionStatusConfirmed, VersionCount: 1, Usages: []string{"shared-library"}, Source: "shared", SharedAssetID: record.Asset.ID,
+			SharedVersion: record.Link.Version, PreviewURL: "/api/shared-library/assets/" + record.Asset.ID + "/thumbnail", UpdatedAt: record.Asset.UpdatedAt})
+	}
 	return result, nil
+}
+
+func (s *Service) LinkProjectSharedAsset(user *model.User, projectID, sharedAssetID string, version int) (ProjectAssetSummary, error) {
+	if err := s.RequireSharedLibraryAccess(user); err != nil {
+		return ProjectAssetSummary{}, err
+	}
+	if _, err := s.repo.ProjectForUser(user.ID, projectID); err != nil {
+		return ProjectAssetSummary{}, err
+	}
+	asset, err := s.repo.SharedAsset(strings.TrimSpace(sharedAssetID))
+	if err != nil || asset.Status != model.SharedAssetReady {
+		return ProjectAssetSummary{}, NotFound("共享素材不存在")
+	}
+	series, err := s.repo.SharedAssetSeries(asset.SeriesID)
+	if err != nil || series.Status != model.SharedAssetSeriesReady {
+		return ProjectAssetSummary{}, NotFound("共享素材系列不存在")
+	}
+	if version <= 0 {
+		version = asset.Version
+	}
+	now := time.Now()
+	link := &model.ProjectSharedAssetLink{ID: newID(), ProjectID: projectID, SharedAssetID: asset.ID, Version: version, CreatedBy: user.ID, CreatedAt: now, UpdatedAt: now}
+	if err := s.repo.LinkProjectSharedAsset(link); err != nil {
+		return ProjectAssetSummary{}, err
+	}
+	return ProjectAssetSummary{ID: "shared:" + asset.ID, Title: asset.Title, MediaType: "image", Category: model.AssetCategoryOther, Status: model.AssetVersionStatusConfirmed,
+		VersionCount: 1, Usages: []string{"shared-library"}, Source: "shared", SharedAssetID: asset.ID, SharedVersion: version,
+		PreviewURL: "/api/shared-library/assets/" + asset.ID + "/thumbnail", UpdatedAt: asset.UpdatedAt}, nil
 }
 
 func (s *Service) LinkProjectAsset(userID string, projectID string, req LinkProjectAssetRequest) (ProjectAssetSummary, error) {

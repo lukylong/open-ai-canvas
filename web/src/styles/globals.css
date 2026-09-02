@@ -15887,10 +15887,18 @@ html:not(.dark) .creation-home .storyboard-workbench-bar-action:hover { backgrou
 
 /* 系列卡片把选择、查看和同步分发变成常驻入口，不再藏在悬浮菜单内。 */
 .asset-series-card .assets-select-check { opacity: 1; }
-.asset-series-card-body { min-width: 0; }
-.asset-series-card-main { display: block; width: 100%; padding: 10px 11px 8px; text-align: left; }
+.asset-series-card { display: flex; min-width: 0; flex-direction: column; }
+.asset-series-card-body { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; }
+.asset-series-card-main { display: flex; min-width: 0; width: 100%; flex: 1 1 auto; flex-direction: column; padding: 10px 11px 8px; text-align: left; }
 .asset-series-card-main:focus-visible { outline: 2px solid var(--control-focus-ring); outline-offset: -2px; }
-.asset-series-card-actions { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border-top: 1px solid color-mix(in srgb, var(--foreground) 7%, transparent); }
+.asset-series-card-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
+.asset-series-card-heading > h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); font-size: var(--fs-body); font-weight: 600; }
+.asset-series-card-heading > span { flex: 0 0 auto; color: color-mix(in srgb, var(--foreground) 38%, transparent); font-size: var(--fs-tiny); font-variant-numeric: tabular-nums; }
+.asset-series-card-summary { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--foreground) 52%, transparent); font-size: var(--fs-label); }
+.asset-series-card-identity { display: flex; min-width: 0; align-items: center; gap: 6px; margin-top: 4px; color: color-mix(in srgb, var(--foreground) 38%, transparent); font-size: var(--fs-tiny); }
+.asset-series-card-type { flex: 0 0 auto; white-space: nowrap; }
+.asset-series-card-id { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-series-card-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-top: auto; padding: 7px 8px; border-top: 1px solid color-mix(in srgb, var(--foreground) 7%, transparent); }
 .asset-series-card-actions > button { display: inline-flex; min-height: 28px; flex: 1 1 50%; align-items: center; justify-content: center; gap: 5px; border-radius: var(--r-md); color: color-mix(in srgb, var(--foreground) 58%, transparent); font-size: var(--fs-label); font-weight: 560; }
 .asset-series-card-actions > button svg { width: 13px; height: 13px; }
 .asset-series-card-actions > button:hover { background: color-mix(in srgb, var(--foreground) 7%, transparent); color: var(--foreground); }

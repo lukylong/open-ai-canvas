@@ -2,7 +2,7 @@ import { useMemo } from "react";
 
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
-import { externalAssetToInsertPayload, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
+import { externalAssetToInsertPayload, sharedAssetToInsertPayload, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { compileCharacterReferencePrompt } from "@/lib/canvas/canvas-character-reference";
 import { ASSET_CATEGORY_LABELS, normalizeAssetCategory } from "@/lib/asset-category";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
@@ -71,8 +71,10 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
             footerNote={externalAssetSources.error || "角色引用会在生成时解析当前角色版本"}
             onFolderAction={onInsertFolder ? async (folderId) => { await onInsertFolder(folderId); onClose(); } : undefined}
             onClose={onClose}
-            onConfirm={async (ids) => {
+            onConfirm={async (ids, selectedItems) => {
                 const payloads = await Promise.all(ids.map(async (id) => {
+                    const shared = selectedItems.find((item) => item.id === id)?.shared;
+                    if (shared) return sharedAssetToInsertPayload(shared);
                     const external = externalAssetSources.items.find((item) => item.id === id)?.external;
                     if (external) return externalAssetToInsertPayload(external);
                     const item = items.find((candidate) => candidate.id === id);

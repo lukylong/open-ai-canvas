@@ -31,6 +31,14 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	if !db.Migrator().HasIndex(&model.ProjectAssetCandidate{}, "idx_project_asset_candidates_pending_identity") {
 		t.Fatal("schema migration v3 did not create candidate identity index")
 	}
+	for _, table := range []any{&model.SharedAssetSeries{}, &model.SharedAsset{}, &model.SharedAssetUploadBatch{}, &model.SharedAssetUploadItem{}, &model.ProjectSharedAssetLink{}} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("schema migration v4 table missing: %T", table)
+		}
+	}
+	if !db.Migrator().HasColumn(&model.User{}, "SharedLibraryEnabled") {
+		t.Fatal("schema migration v4 did not add users.shared_library_enabled")
+	}
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("migration should be idempotent: %v", err)
 	}

@@ -38,6 +38,11 @@ func (s *Service) createTask(userID string, req CreateTaskRequest, link *taskBat
 	if err != nil {
 		return nil, err
 	}
+	// Shared references are stable IDs, never bearer URLs. Revalidate them at
+	// execution admission so revoking the account switch takes effect immediately.
+	if err := s.ValidateSharedAssetReferences(userID, normalizedInput); err != nil {
+		return nil, err
+	}
 
 	var routed *RoutedModel
 	logicalModelID := strings.TrimSpace(req.LogicalModelID)

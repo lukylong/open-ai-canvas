@@ -5,12 +5,13 @@ import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
 import { ASSET_CATEGORY_LABELS, normalizeAssetCategory } from "@/lib/asset-category";
 import type { ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
+import type { AssetReference, SharedAsset } from "@/services/api/shared-library";
 
 type InsertableAsset = Extract<Asset, { kind: "text" | "image" | "video" | "audio" }>;
 
 export type InsertAssetPayload =
-    | { kind: "text"; content: string; title: string; assetId?: string }
-    | { kind: "image"; dataUrl: string; title: string; url?: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string; assetId?: string }
+    | { kind: "text"; content: string; title: string; assetId?: string; assetReference?: AssetReference }
+    | { kind: "image"; dataUrl: string; title: string; url?: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string; assetId?: string; assetReference?: AssetReference }
     | { kind: "video"; url: string; title: string; storageKey?: string; width?: number; height?: number; durationMs?: number; hasAudio?: boolean; bytes?: number; mimeType?: string; assetId?: string }
     | { kind: "audio"; url: string; title: string; storageKey?: string; durationMs?: number; bytes?: number; mimeType?: string; assetId?: string }
     | { kind: "character"; title: string; assetId: string; versionId: string; prompt: string; aliases: string[]; definition: Record<string, unknown>; coverUrl?: string; visualStatus: string; voiceStatus: string; voiceName?: string; voiceProfile?: { name: string; provider: string; language: string; timbre: string }; voiceInstructions?: string };
@@ -51,8 +52,8 @@ export function AssetPickerModal({ open, multiple = true, onInsert, onClose }: P
             confirmLabel={(count) => `插入已选素材${count ? `（${count}）` : ""}`}
             emptyDescription="先在素材库中添加图片、视频、音频或文本。"
             onClose={onClose}
-            onConfirm={async (ids) => {
-                await onInsert(assetPickerItemsToInsertPayloads(ids, items));
+            onConfirm={async (ids, selectedItems) => {
+                await onInsert(assetPickerItemsToInsertPayloads(ids, selectedItems));
                 onClose();
             }}
         />
@@ -64,6 +65,7 @@ export function assetPickerItemsToInsertPayloads(ids: string[], items: AssetLibr
     return ids.map((id) => {
         const pickerItem = itemsById.get(id);
         if (!pickerItem) throw new Error("所选素材已不存在，请重新选择");
+        if (pickerItem.shared) return sharedAssetToInsertPayload(pickerItem.shared);
         if (pickerItem.external) return externalAssetToInsertPayload(pickerItem.external);
         const asset = pickerItem.asset;
         if (!asset || (asset.kind !== "text" && asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio")) {
@@ -71,6 +73,12 @@ export function assetPickerItemsToInsertPayloads(ids: string[], items: AssetLibr
         }
         return localAssetToInsertPayload(asset);
     });
+}
+
+export function sharedAssetToInsertPayload(asset: SharedAsset): InsertAssetPayload {
+    const url = `/api/shared-library/assets/${encodeURIComponent(asset.id)}/file`;
+    return { kind: "image", dataUrl: url, url, title: asset.title, width: asset.width, height: asset.height, bytes: asset.size, mimeType: asset.mimeType,
+        assetId: `shared:${asset.id}`, assetReference: { source: "shared", sharedAssetId: asset.id, version: asset.version } };
 }
 
 function localAssetToInsertPayload(asset: InsertableAsset): InsertAssetPayload {

@@ -10,11 +10,12 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 3
+const CurrentSchemaVersion int64 = 4
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
 const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v3-20260831-r1"
+const sharedAssetLibraryChecksum = "sha256:shared-asset-library-v4-20260902"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -44,6 +45,18 @@ var schemaMigrations = []migration{
 	{version: 1, name: "baseline_gorm_schema", checksum: baselineSchemaChecksum, apply: migrateSchemaV1},
 	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum, apply: migrateSchemaV2},
 	{version: 3, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
+	{version: 4, name: "shared_asset_library", checksum: sharedAssetLibraryChecksum, apply: migrateSchemaV4},
+}
+
+func migrateSchemaV4(tx *gorm.DB) error {
+	return tx.AutoMigrate(
+		&model.User{},
+		&model.SharedAssetSeries{},
+		&model.SharedAsset{},
+		&model.SharedAssetUploadBatch{},
+		&model.SharedAssetUploadItem{},
+		&model.ProjectSharedAssetLink{},
+	)
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {

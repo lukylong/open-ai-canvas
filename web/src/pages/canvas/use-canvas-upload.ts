@@ -697,7 +697,7 @@ export function useCanvasUpload({
             } satisfies CanvasNodeData;
         }
         if (payload.kind === "text") {
-            const node = { ...createCanvasNode(CanvasNodeType.Text, center, { content: payload.content, status: NODE_STATUS_SUCCESS, assetId: payload.assetId }), title: payload.content.slice(0, 32) || "Assistant Text" };
+            const node = { ...createCanvasNode(CanvasNodeType.Text, center, { content: payload.content, status: NODE_STATUS_SUCCESS, assetId: payload.assetId, assetReference: payload.assetReference }), title: payload.content.slice(0, 32) || "Assistant Text" };
             return node;
         }
         if (payload.kind === "audio") {
@@ -722,7 +722,7 @@ export function useCanvasUpload({
         const metadata = storedImage.storageKey
             ? imageMetadata({ ...storedImage, storageKey: storedImage.storageKey, width: meta.width, height: meta.height })
             : { content: storedImage.url, status: NODE_STATUS_SUCCESS, naturalWidth: meta.width, naturalHeight: meta.height, bytes: storedImage.bytes, mimeType: storedImage.mimeType };
-        return { id, type: CanvasNodeType.Image, title: payload.title.slice(0, 32) || "Generated Image", position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { ...metadata, prompt: payload.title, assetId: payload.assetId } } satisfies CanvasNodeData;
+        return { id, type: CanvasNodeType.Image, title: payload.title.slice(0, 32) || "Generated Image", position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { ...metadata, prompt: payload.title, assetId: payload.assetId, assetReference: payload.assetReference } } satisfies CanvasNodeData;
     }, []);
 
     const insertAssetPayloads = useCallback(async (payloads: InsertAssetPayload[], origin: Position, successMessage: string, failureMessage: string): Promise<CanvasNodeData[]> => {

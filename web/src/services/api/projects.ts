@@ -68,6 +68,10 @@ export type ProjectAsset = {
     previewText?: string;
     updatedAt: string;
     character?: CharacterCardSummary;
+    source?: "shared";
+    sharedAssetId?: string;
+    sharedVersion?: number;
+    previewUrl?: string;
 };
 
 export type ProjectAssetFolder = {
@@ -480,6 +484,14 @@ export function unlinkCanvasProject(projectId: string, canvasId: string) {
 
 export function linkProjectAsset(projectId: string, input: { assetId: string; category: AssetCategory; folderId?: string }, signal?: AbortSignal) {
     return request<{ asset: ProjectAsset }>(api.post(`/projects/${encodeURIComponent(projectId)}/assets`, input, { signal }));
+}
+
+export function linkProjectSharedAsset(projectId: string, input: { sharedAssetId: string; version: number }) {
+    return request<{ asset: ProjectAsset }>(api.post(`/projects/${encodeURIComponent(projectId)}/shared-assets`, input));
+}
+
+export function unlinkProjectSharedAsset(projectId: string, sharedAssetId: string) {
+    return request<{ id: string }>(api.delete(`/projects/${encodeURIComponent(projectId)}/shared-assets/${encodeURIComponent(sharedAssetId)}`));
 }
 
 export function unlinkProjectAsset(projectId: string, assetId: string) {
