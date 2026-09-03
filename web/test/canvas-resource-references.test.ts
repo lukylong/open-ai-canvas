@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildAssetMentionReferences, buildNodeMentionReferences, buildOrderedCanvasResourceReferences, canvasResourceMentionToken, collectUpstreamVideoNodes } from "../src/lib/canvas/canvas-resource-references";
+import { buildAssetMentionReferences, buildNodeMentionReferences, buildOrderedCanvasResourceReferences, buildSharedAssetMentionReferences, canvasResourceMentionToken, collectUpstreamVideoNodes } from "../src/lib/canvas/canvas-resource-references";
 import { canvasNodeToAsset } from "../src/lib/canvas/canvas-node-asset";
 import { buildNodeGenerationInputs } from "../src/components/canvas/canvas-node-generation";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
@@ -189,5 +189,18 @@ describe("canvas resource mention slots", () => {
             title: "场景图",
             active: false,
         })).toBe("@[asset:asset-a]");
+    });
+
+    test("共享素材使用带版本的稳定 token 和显式引用", () => {
+        const [reference] = buildSharedAssetMentionReferences([{
+            id: "shared-a", seriesId: "series-a", uploaderUserId: "owner", resourceId: "resource-a", title: "共享场景图",
+            mimeType: "image/png", size: 128, width: 64, height: 64, sha256: "hash", version: 3, status: "ready",
+            createdAt: "2026-09-03T00:00:00.000Z", updatedAt: "2026-09-03T00:00:00.000Z",
+        }]);
+
+        expect(canvasResourceMentionToken(reference)).toBe("@[asset:shared:shared-a:3]");
+        expect(reference.assetReference).toEqual({ source: "shared", sharedAssetId: "shared-a", version: 3 });
+        expect(reference.librarySource).toBe("shared");
+        expect(reference.previewUrl).toBe("/api/shared-library/assets/shared-a/thumbnail");
     });
 });

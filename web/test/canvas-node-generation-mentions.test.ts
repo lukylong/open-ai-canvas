@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
 import { buildNodeGenerationContext } from "../src/components/canvas/canvas-node-generation";
+import { submitBackendGenerationTask, type GenerationTaskDependencies } from "../src/services/api/generation-task";
+import type { GenerationTask } from "../src/services/api/task-center";
+import { defaultConfig } from "../src/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 
 function node(id: string, type: CanvasNodeType, content: string): CanvasNodeData {
@@ -92,5 +95,41 @@ describe("canvas node generation position mentions", () => {
         expect(context.referenceImages.map((item) => item.id)).toEqual(["image-a"]);
         expect(context.prompt).toBe("让 图片1 进入画面");
         expect(context.prompt).not.toContain("@[node:");
+    });
+
+    test("共享素材 token 解析为服务端二次鉴权的参考图", () => {
+        const target = targetNode();
+        const context = buildNodeGenerationContext(target.id, [target], [], "让 @[asset:shared:shared-a:3] 进入画面", []);
+
+        expect(context.prompt).toBe("让 图片1 进入画面");
+        expect(context.referenceImages).toEqual([{
+            id: "shared:shared-a",
+            name: "共享素材",
+            type: "image/*",
+            dataUrl: "",
+            assetReference: { source: "shared", sharedAssetId: "shared-a", version: 3 },
+        }]);
+    });
+
+    test("共享素材引用提交时不复制成个人资源且保留显式引用", async () => {
+        let createdInput: Parameters<GenerationTaskDependencies["createTask"]>[0] | undefined;
+        const task = { id: "task-shared", type: "canvas_image", status: "queued", prompt: "test", attempts: 0, createdAt: "2026-09-03T00:00:00.000Z", updatedAt: "2026-09-03T00:00:00.000Z" } satisfies GenerationTask;
+        await submitBackendGenerationTask({
+            mode: "image",
+            prompt: "test",
+            config: { ...defaultConfig, model: "gpt-image-1", imageModel: "gpt-image-1" },
+            referenceImages: [{ id: "shared:shared-a", name: "共享素材", type: "image/png", dataUrl: "", assetReference: { source: "shared", sharedAssetId: "shared-a", version: 3 } }],
+        }, {
+            createTask: async (input) => { createdInput = input; return task; },
+            waitTask: async () => { throw new Error("should not wait"); },
+            runLocal: async () => ({ mode: "image" }),
+            createId: () => "id-1",
+            now: () => "2026-09-03T00:00:00.000Z",
+        });
+
+        expect(createdInput?.input.referenceImages).toEqual([{
+            id: "shared:shared-a", name: "共享素材", type: "image/png", dataUrl: "", storageKey: undefined, url: undefined,
+            assetReference: { source: "shared", sharedAssetId: "shared-a", version: 3 },
+        }]);
     });
 });

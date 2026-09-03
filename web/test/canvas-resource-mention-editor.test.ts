@@ -76,4 +76,17 @@ describe("canvas resource mention editor", () => {
         expect(css).toContain(".canvas-resource-mention-item.is-skill");
         expect(css).toContain(".canvas-resource-mention-meta");
     });
+
+    test("loads permitted shared assets in every full asset-library mention menu", () => {
+        const component = source("../src/components/canvas/canvas-resource-mention-textarea.tsx");
+        const hook = source("../src/components/canvas/use-shared-asset-mention-references.ts");
+        const createPage = source("../src/pages/create/index.tsx");
+
+        expect(component).toContain("useSharedAssetMentionReferences(includeAssetLibrary)");
+        expect(component).toContain('reference.librarySource === "shared" ? <em>共享</em>');
+        expect(hook).toContain('queryKey: ["shared-library", user?.id || "anonymous", "mention-assets"]');
+        expect(hook).toContain("user.role === \"admin\" || user.sharedLibraryEnabled");
+        expect(createPage).toContain("includeAssetLibrary mentionMenuWidth={400}");
+        expect(createPage).toContain("onReferenceSelect={props.onReferenceSelect}");
+    });
 });

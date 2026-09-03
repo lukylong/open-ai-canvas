@@ -103,17 +103,24 @@ const videoPollTimeout = 30 * time.Minute
 const maxProviderResponseBytes int64 = 64 << 20
 
 type providerMedia struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	DataURL    string `json:"dataUrl"`
-	URL        string `json:"url"`
-	StorageKey string `json:"storageKey"`
-	MimeType   string `json:"mimeType"`
-	Bytes      int64  `json:"bytes"`
-	Width      int    `json:"width"`
-	Height     int    `json:"height"`
-	DurationMs int64  `json:"durationMs"`
+	ID             string                  `json:"id"`
+	Name           string                  `json:"name"`
+	Type           string                  `json:"type"`
+	DataURL        string                  `json:"dataUrl"`
+	URL            string                  `json:"url"`
+	StorageKey     string                  `json:"storageKey"`
+	MimeType       string                  `json:"mimeType"`
+	Bytes          int64                   `json:"bytes"`
+	Width          int                     `json:"width"`
+	Height         int                     `json:"height"`
+	DurationMs     int64                   `json:"durationMs"`
+	AssetReference *providerAssetReference `json:"assetReference,omitempty"`
+}
+
+type providerAssetReference struct {
+	Source        string `json:"source"`
+	SharedAssetID string `json:"sharedAssetId"`
+	Version       int    `json:"version"`
 }
 
 type imageResponse struct {
@@ -1333,6 +1340,9 @@ func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationI
 }
 
 func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, requirePublicURL bool) error {
+	if media.AssetReference != nil && media.AssetReference.Source == "shared" {
+		return s.hydrateSharedProviderMedia(userID, media, requirePublicURL)
+	}
 	if !strings.HasPrefix(media.StorageKey, "resource:") {
 		if requirePublicURL && strings.HasPrefix(strings.TrimSpace(media.DataURL), "data:") {
 			return errors.New("当前 JSON 视频协议的参考素材不能使用内嵌数据，请先上传到对象存储或提供公网素材地址")
@@ -1388,6 +1398,71 @@ func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, requ
 	media.Width = resource.Width
 	media.Height = resource.Height
 	media.DurationMs = resource.DurationMs
+	return nil
+}
+
+func (s *Service) hydrateSharedProviderMedia(userID string, media *providerMedia, requirePublicURL bool) error {
+	user, err := s.repo.User(userID)
+	if err != nil {
+		return err
+	}
+	if err := s.RequireSharedLibraryAccess(user); err != nil {
+		return err
+	}
+	asset, err := s.repo.SharedAsset(strings.TrimSpace(media.AssetReference.SharedAssetID))
+	if err != nil || asset.Status != model.SharedAssetReady {
+		return BadAuthRequest("引用的共享素材不可用")
+	}
+	if media.AssetReference.Version < 1 || asset.Version != media.AssetReference.Version {
+		return BadAuthRequest("引用的共享素材版本已失效")
+	}
+	series, err := s.repo.SharedAssetSeries(asset.SeriesID)
+	if err != nil || series.Status != model.SharedAssetSeriesReady {
+		return BadAuthRequest("引用的共享素材系列不可用")
+	}
+	resource, err := s.repo.Resource(asset.ResourceID)
+	if err != nil {
+		return fmt.Errorf("读取共享素材资源失败：%w", err)
+	}
+	if resource.Status != model.ResourceStatusReady {
+		return errors.New("共享素材资源尚未上传完成")
+	}
+	media.StorageKey = "resource:" + resource.ID
+	media.MimeType = firstNonEmpty(media.MimeType, resource.MimeType)
+	media.Bytes = resource.Size
+	media.Width = resource.Width
+	media.Height = resource.Height
+	media.DurationMs = resource.DurationMs
+	if requirePublicURL {
+		signedURL, err := s.directResourceURL(resource, time.Now().Add(providerResourceURLTTL))
+		if err != nil {
+			return fmt.Errorf("生成共享素材地址失败：%w", err)
+		}
+		media.URL = signedURL
+		media.DataURL = ""
+		return nil
+	}
+	_, body, err := s.OpenResource(resource.UserID, resource.ID)
+	if err != nil {
+		return fmt.Errorf("读取共享素材资源失败：%w", err)
+	}
+	defer body.Close()
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return err
+	}
+	resourceLimit := megabytes(policy.Resource.ResourceUploadMB)
+	data, err := io.ReadAll(io.LimitReader(body, resourceLimit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > resourceLimit {
+		return fmt.Errorf("任务参考资源超过 %dMB", policy.Resource.ResourceUploadMB)
+	}
+	mimeType := normalizedMediaMimeType(firstNonEmpty(media.MimeType, resource.MimeType), data)
+	media.DataURL = dataURL(mimeType, data)
+	media.MimeType = mimeType
+	media.Bytes = int64(len(data))
 	return nil
 }
 

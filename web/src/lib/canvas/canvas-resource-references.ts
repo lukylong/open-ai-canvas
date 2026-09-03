@@ -3,6 +3,7 @@ import { canvasNodeVideoPreviewUrl, canvasVideoAssetPreviewUrl } from "@/lib/can
 import { getNodeResourceKind } from "@/lib/canvas/node-registry";
 import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import type { Skill } from "@/services/api/skills";
+import type { AssetReference, SharedAsset } from "@/services/api/shared-library";
 import type { Asset, AssetCategory } from "@/stores/use-asset-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeTypeId } from "@/types/canvas";
 
@@ -25,6 +26,9 @@ export type CanvasResourceReference = {
     sourceType?: CanvasNodeTypeId;
     skill?: Skill;
     assetId?: string;
+    assetReference?: AssetReference;
+    sharedAsset?: SharedAsset;
+    librarySource?: "personal" | "shared";
     category?: AssetCategory;
     mentionToken?: string;
 };
@@ -70,8 +74,26 @@ export function buildAssetMentionReferences(assets: Asset[]): CanvasResourceRefe
             text,
             active: false,
             category: asset.category || "other",
+            librarySource: "personal",
         }];
     });
+}
+
+export function buildSharedAssetMentionReferences(assets: SharedAsset[]): CanvasResourceReference[] {
+    return assets.map((asset) => ({
+        id: `shared:${asset.id}`,
+        nodeId: "",
+        assetId: `shared:${asset.id}:${asset.version}`,
+        assetReference: { source: "shared", sharedAssetId: asset.id, version: asset.version },
+        sharedAsset: asset,
+        kind: "image",
+        label: asset.title,
+        title: asset.title,
+        previewUrl: `/api/shared-library/assets/${encodeURIComponent(asset.id)}/thumbnail`,
+        active: false,
+        category: "other",
+        librarySource: "shared",
+    }));
 }
 
 export function buildCanvasResourceReferences(nodes: CanvasNodeData[], connections: CanvasConnection[], contextNodeId?: string | null) {

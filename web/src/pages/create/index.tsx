@@ -14,6 +14,7 @@ import { VoiceRecordingButton } from "@/components/conversation/voice-recording-
 import { ModelPicker } from "@/components/model-picker";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { creationCanvasHandoffPath, creationResultAssetIds } from "@/lib/canvas/canvas-asset-handoff";
+import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { ASSET_CATEGORY_LABELS } from "@/lib/asset-category";
 import { createGenerationBatchRetryContexts, createGenerationRetryContext, runGenerationOperationOnce, type GenerationRetryContext } from "@/lib/canvas/canvas-project-generation";
 import { createClientId } from "@/lib/client-id";
@@ -1034,6 +1035,30 @@ export default function CreatePage() {
 
     const cancelComposeNextShot = () => setComposingNextShot(false);
 
+    const selectComposerLibraryReference = (reference: CanvasResourceReference) => {
+        if (!reference.librarySource) return;
+        let attachment: CreationAttachment | undefined;
+        if (reference.sharedAsset) {
+            attachment = creationAttachmentFromSharedAsset(reference.sharedAsset);
+        } else if (reference.assetId) {
+            const asset = assets.find((item) => item.id === reference.assetId);
+            if (asset?.kind === "image") attachment = creationAttachmentFromAsset(asset);
+            else if (asset?.kind === "video" && mode !== "image") attachment = creationAttachmentFromVideoAsset(asset);
+            else if (asset?.kind === "audio" && mode !== "image") attachment = creationAttachmentFromAudioAsset(asset);
+        }
+        if (!attachment) {
+            toast.warning(mode === "image" ? "当前图片模式只支持引用图片素材" : "当前模式不支持这个素材类型");
+            return null;
+        }
+        const exists = attachments.some((item) => item.id === attachment.id);
+        if (!exists && attachments.length >= maxReferences) {
+            toast.warning(`已达到当前模型的参考内容上限（${maxReferences} 个）`);
+            return null;
+        }
+        if (!exists) setAttachments((current) => [...current, attachment].slice(0, maxReferences));
+        return `@[attachment:${attachment.id}]`;
+    };
+
     const composerProps = {
         mode,
         prompt,
@@ -1050,6 +1075,7 @@ export default function CreatePage() {
         onReplaceAttachment: replaceReferenceFromTrack,
         onReplaceReferenceFiles: replaceReferenceFromFiles,
         onOpenLibrary: () => setLibraryOpen(true),
+        onReferenceSelect: selectComposerLibraryReference,
         fileInputRef,
         onFileChange: handleFileChange,
         onModeChange: selectMode,
@@ -1352,6 +1378,7 @@ type ComposerProps = {
     onReplaceAttachment: (targetAttachmentId: string, replacement: CreationAttachment) => void;
     onReplaceReferenceFiles: (targetAttachmentId: string, files: File[]) => void;
     onOpenLibrary: () => void;
+    onReferenceSelect: (reference: CanvasResourceReference) => string | null | void;
     fileInputRef: RefObject<HTMLInputElement | null>;
     onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
     onModeChange: (mode: CreationMode) => void;
@@ -1518,7 +1545,7 @@ function CreationComposer(props: ComposerProps) {
         <div className="creation-chat-writing-surface">
             <input ref={props.fileInputRef} type="file" hidden accept={creationUploadAccept(props.mode)} multiple onChange={props.onFileChange} />
             <div className="creation-chat-editor">
-                <CanvasResourceMentionTextarea ref={props.composerFocusRef} value={props.prompt} references={props.references} mentionMenuWidth={400} sendOnEnter={false} onChange={props.setPrompt} onSubmit={props.onSubmit} containerClassName="creation-chat-mention-container" className="creation-chat-mention-editor creation-scrollbar" style={{ color: "var(--creation-text)" }} placeholder={composerPlaceholder} aria-label="创作提示词，可使用 @ 引用当前参考内容或技能" spellCheck disabled={interactionBusy} activeDropReferenceId={dropTargetReferenceId} onReferenceFilesDrop={(reference, files) => { const target = props.references.find((item) => item.id === reference.id); if (target?.attachmentId) props.onReplaceReferenceFiles(target.attachmentId, files); }} />
+                <CanvasResourceMentionTextarea ref={props.composerFocusRef} value={props.prompt} references={props.references} includeAssetLibrary mentionMenuWidth={400} sendOnEnter={false} onChange={props.setPrompt} onSubmit={props.onSubmit} onReferenceSelect={props.onReferenceSelect} containerClassName="creation-chat-mention-container" className="creation-chat-mention-editor creation-scrollbar" style={{ color: "var(--creation-text)" }} placeholder={composerPlaceholder} aria-label="创作提示词，可使用 @ 引用当前参考内容或技能" spellCheck disabled={interactionBusy} activeDropReferenceId={dropTargetReferenceId} onReferenceFilesDrop={(reference, files) => { const target = props.references.find((item) => item.id === reference.id); if (target?.attachmentId) props.onReplaceReferenceFiles(target.attachmentId, files); }} />
                 {props.attachments.length || referencesSupported ? <div className={`creation-reference-panel${trackState.isExpanded ? " is-expanded" : ""}`} aria-busy={interactionBusy}>
                     {trackState.isExpanded ? <div className="creation-reference-panel-header">
                         <div className="creation-reference-filter-tabs" role="group" aria-label="筛选参考内容">

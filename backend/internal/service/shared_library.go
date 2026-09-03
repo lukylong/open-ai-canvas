@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -575,9 +576,9 @@ func (s *Service) OpenSharedAssetRange(user *model.User, id string, thumbnail bo
 }
 
 func (s *Service) ValidateSharedAssetReferences(userID string, value any) error {
-	var ids []string
-	collectSharedAssetIDs(value, &ids)
-	if len(ids) == 0 {
+	var references []sharedAssetReferenceValue
+	collectSharedAssetReferences(value, &references)
+	if len(references) == 0 {
 		return nil
 	}
 	user, err := s.repo.User(userID)
@@ -587,10 +588,22 @@ func (s *Service) ValidateSharedAssetReferences(userID string, value any) error 
 	if err := s.RequireSharedLibraryAccess(user); err != nil {
 		return err
 	}
-	for _, id := range uniqueNonEmpty(ids) {
-		asset, err := s.repo.SharedAsset(id)
+	seen := map[string]struct{}{}
+	for _, reference := range references {
+		key := fmt.Sprintf("%s:%d", reference.ID, reference.Version)
+		if reference.ID == "" {
+			return BadAuthRequest("引用的共享素材标识无效")
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		asset, err := s.repo.SharedAsset(reference.ID)
 		if err != nil || asset.Status != model.SharedAssetReady {
 			return BadAuthRequest("引用的共享素材不可用")
+		}
+		if reference.Version < 1 || asset.Version != reference.Version {
+			return BadAuthRequest("引用的共享素材版本已失效")
 		}
 		series, err := s.repo.SharedAssetSeries(asset.SeriesID)
 		if err != nil || series.Status != model.SharedAssetSeriesReady {
@@ -600,20 +613,34 @@ func (s *Service) ValidateSharedAssetReferences(userID string, value any) error 
 	return nil
 }
 
-func collectSharedAssetIDs(value any, ids *[]string) {
+type sharedAssetReferenceValue struct {
+	ID      string
+	Version int
+}
+
+func collectSharedAssetReferences(value any, references *[]sharedAssetReferenceValue) {
 	switch current := value.(type) {
 	case map[string]any:
 		if current["source"] == "shared" {
 			if id, ok := current["sharedAssetId"].(string); ok {
-				*ids = append(*ids, id)
+				version := 0
+				switch raw := current["version"].(type) {
+				case float64:
+					version = int(raw)
+				case int:
+					version = raw
+				case json.Number:
+					version, _ = strconv.Atoi(raw.String())
+				}
+				*references = append(*references, sharedAssetReferenceValue{ID: strings.TrimSpace(id), Version: version})
 			}
 		}
 		for _, child := range current {
-			collectSharedAssetIDs(child, ids)
+			collectSharedAssetReferences(child, references)
 		}
 	case []any:
 		for _, child := range current {
-			collectSharedAssetIDs(child, ids)
+			collectSharedAssetReferences(child, references)
 		}
 	}
 }

@@ -547,6 +547,7 @@ async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAud
 }
 
 async function prepareBackendImageReference(image: ReferenceImage) {
+    if (image.assetReference?.source === "shared") return backendImageReference(image, {});
     if (resourceIdFromStorageKey(image.storageKey)) return backendImageReference(image, { storageKey: image.storageKey });
     const sourceUrl = image.url || image.dataUrl;
     if (/^https?:\/\//i.test(sourceUrl)) return backendImageReference(image, { url: sourceUrl });
@@ -572,6 +573,7 @@ function backendImageReference(image: ReferenceImage, override: Partial<Referenc
         ...(image.bytes ? { bytes: image.bytes } : {}),
         ...(image.width ? { width: image.width } : {}),
         ...(image.height ? { height: image.height } : {}),
+        ...(image.assetReference ? { assetReference: image.assetReference } : {}),
     };
 }
 

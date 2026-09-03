@@ -77,7 +77,12 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         : [];
     // 显式 @ 引用必须与提示词面板展示的资源集合一致；默认自动输入仍只取入边，
     // 避免已有图片在没有 @图片N 时被悄悄当作自身参考图。
-    const mentionInputs = mergeGenerationInputs(buildNodeMentionGenerationInputs(nodeId, nodes, connections), portraitTextureInput, buildAssetGenerationInputs(assets));
+    const mentionInputs = mergeGenerationInputs(
+        buildNodeMentionGenerationInputs(nodeId, nodes, connections),
+        portraitTextureInput,
+        buildAssetGenerationInputs(assets),
+        buildSharedAssetGenerationInputs(prompt),
+    );
     const storyboardInputs = getConnectedStoryboardRows(nodeId, nodes, connections);
     assertResolvableGenerationMentions(prompt, mentionInputs);
     const hasExplicitResourceMention = hasResolvableGenerationMention(prompt, mentionInputs);
@@ -375,6 +380,31 @@ function buildAssetGenerationInputs(assets: Asset[]): NodeGenerationInput[] {
         if (asset.kind === "entity" && asset.category === "character") return [{ nodeId, type: "character", title: asset.title, character: { nodeId, assetId: asset.id, requestedVersionId: asset.primaryVersionId } }];
         return [];
     });
+}
+
+export function buildSharedAssetGenerationInputs(prompt: string): NodeGenerationInput[] {
+    const seen = new Set<string>();
+    const inputs: NodeGenerationInput[] = [];
+    for (const match of prompt.matchAll(/@\[asset:shared:([^:\]]+):(\d+)\]/g)) {
+        const sharedAssetId = match[1];
+        const version = Number(match[2]);
+        const assetId = `shared:${sharedAssetId}:${version}`;
+        if (!sharedAssetId || !Number.isInteger(version) || version < 1 || seen.has(assetId)) continue;
+        seen.add(assetId);
+        inputs.push({
+            nodeId: `asset:${assetId}`,
+            type: "image",
+            title: "共享素材",
+            image: {
+                id: `shared:${sharedAssetId}`,
+                name: "共享素材",
+                type: "image/*",
+                dataUrl: "",
+                assetReference: { source: "shared", sharedAssetId, version },
+            },
+        });
+    }
+    return inputs;
 }
 
 function getConnectedStoryboardRows(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]): NodeGenerationInput[] {

@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,12 +121,30 @@ func TestSharedUploadBoundaryAndIdempotentComplete(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("asset count = %d, want 1", count)
 	}
+	sharedAsset, err := svc.repo.SharedAsset(first.Items[0].AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := providerMedia{AssetReference: &providerAssetReference{Source: "shared", SharedAssetID: sharedAsset.ID, Version: sharedAsset.Version}}
+	if err := svc.hydrateProviderMedia(member.ID, &media, false); err != nil {
+		t.Fatalf("hydrate shared provider media: %v", err)
+	}
+	if !strings.HasPrefix(media.DataURL, "data:image/png;base64,") || media.StorageKey != "resource:"+sharedAsset.ResourceID {
+		t.Fatalf("hydrated shared media = %#v", media)
+	}
+	invalidVersion := map[string]any{"referenceImages": []any{map[string]any{"assetReference": map[string]any{"source": "shared", "sharedAssetId": sharedAsset.ID, "version": float64(sharedAsset.Version + 1)}}}}
+	if err := svc.ValidateSharedAssetReferences(member.ID, invalidVersion); err == nil {
+		t.Fatal("stale shared asset version was accepted")
+	}
 	member.SharedLibraryEnabled = false
 	if err := db.Save(&member).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.PrepareSharedAssetDelivery(&member, first.Items[0].AssetID, false, ""); err == nil {
 		t.Fatal("revoked user retained file access")
+	}
+	if err := svc.hydrateProviderMedia(member.ID, &providerMedia{AssetReference: &providerAssetReference{Source: "shared", SharedAssetID: sharedAsset.ID, Version: sharedAsset.Version}}, false); err == nil {
+		t.Fatal("revoked user retained generation reference access")
 	}
 }
 
