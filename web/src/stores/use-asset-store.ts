@@ -3,7 +3,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import type { AssetCategory } from "@/lib/asset-category";
-import { normalizeAssetRecord, parseAssetStorageDocument, rebaseAssetSnapshot, serializeAssetStorageDocument, type AssetStorageDocument } from "@/lib/asset-storage-revision";
+import { normalizeAssetRecord, normalizeAssetRecords, parseAssetStorageDocument, rebaseAssetSnapshot, serializeAssetStorageDocument, type AssetStorageDocument } from "@/lib/asset-storage-revision";
 import { browserCompatibleSha256Hex } from "@/lib/browser-compatible-sha256";
 import { parseCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
@@ -371,7 +371,9 @@ export const useAssetStore = create<AssetStore>()(
                 if (!removedAsset || (!collectImageStorageKeys(removedAsset).size && !collectMediaStorageKeys(removedAsset).size)) return;
                 await get().cleanupImages({ assets: remainingAssets });
             },
-            replaceAssets: (assets) => set({ assets: assets.map(normalizeAssetRecord) }),
+            // 远端历史迁移数据可能缺少客户端 Asset 的 data/identity 字段；先隔离坏记录，
+            // 避免一个旧素材让整个账号的页面在渲染 @ 素材候选时崩溃。
+            replaceAssets: (assets) => set({ assets: normalizeAssetRecords(assets) }),
             cleanupImages: async (extra) => {
                 const scope = getActiveUserScope();
                 const frozenExtraImageKeys = collectImageStorageKeys(extra);

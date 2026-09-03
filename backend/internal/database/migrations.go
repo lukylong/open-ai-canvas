@@ -1,8 +1,10 @@
 package database
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -10,13 +12,14 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 5
+const CurrentSchemaVersion int64 = 6
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
 const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v3-20260831-r1"
 const sharedAssetLibraryChecksum = "sha256:shared-asset-library-v4-20260902"
 const sharedAssetStorageScopeChecksum = "sha256:shared-asset-storage-scope-v5-20260903"
+const legacyZQAssetPayloadChecksum = "sha256:legacy-zq-asset-client-payload-v6-20260903"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -48,6 +51,98 @@ var schemaMigrations = []migration{
 	{version: 3, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
 	{version: 4, name: "shared_asset_library", checksum: sharedAssetLibraryChecksum, apply: migrateSchemaV4},
 	{version: 5, name: "shared_asset_storage_scope", checksum: sharedAssetStorageScopeChecksum, apply: migrateSchemaV5},
+	{version: 6, name: "legacy_zq_asset_client_payload", checksum: legacyZQAssetPayloadChecksum, apply: migrateSchemaV6},
+}
+
+func migrateSchemaV6(tx *gorm.DB) error {
+	var assets []model.Asset
+	if err := tx.Where("id LIKE ?", "zqa_%").Find(&assets).Error; err != nil {
+		return fmt.Errorf("读取历史 ZQ 素材：%w", err)
+	}
+	for _, asset := range assets {
+		payload := make(map[string]any)
+		if err := json.Unmarshal([]byte(asset.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("解析历史 ZQ 素材 %s：%w", asset.ID, err)
+		}
+		if data, ok := payload["data"].(map[string]any); ok && data != nil {
+			continue
+		}
+
+		var representation model.AssetRepresentation
+		if err := tx.Where("asset_version_id = ? AND role = ?", asset.PrimaryVersionID, "original").Order("created_at asc").First(&representation).Error; err != nil {
+			return fmt.Errorf("读取历史 ZQ 素材 %s 的原始表现：%w", asset.ID, err)
+		}
+		var resource model.Resource
+		if err := tx.First(&resource, "id = ?", representation.ResourceID).Error; err != nil {
+			return fmt.Errorf("读取历史 ZQ 素材 %s 的资源：%w", asset.ID, err)
+		}
+
+		kind := legacyClientAssetKind(asset.Kind, resource.MimeType)
+		resourceURL := "/api/resources/" + resource.ID + "/file"
+		data := map[string]any{
+			"storageKey": "resource:" + resource.ID,
+			"bytes":      resource.Size,
+			"mimeType":   resource.MimeType,
+		}
+		coverURL := ""
+		switch kind {
+		case "video":
+			data["url"] = resourceURL
+			data["width"] = resource.Width
+			data["height"] = resource.Height
+			data["durationMs"] = resource.DurationMs
+		case "audio":
+			data["url"] = resourceURL
+			data["durationMs"] = resource.DurationMs
+		default:
+			data["dataUrl"] = resourceURL
+			data["width"] = resource.Width
+			data["height"] = resource.Height
+			coverURL = resourceURL
+		}
+
+		payload["id"] = asset.ID
+		payload["kind"] = kind
+		payload["title"] = asset.Title
+		payload["coverUrl"] = coverURL
+		if _, ok := payload["tags"]; !ok {
+			payload["tags"] = []string{}
+		}
+		payload["category"] = model.NormalizeAssetCategory(asset.Category, kind)
+		payload["status"] = asset.Status
+		payload["primaryVersionId"] = asset.PrimaryVersionID
+		payload["createdAt"] = asset.CreatedAt.UTC().Format(time.RFC3339Nano)
+		payload["updatedAt"] = asset.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		payload["data"] = data
+		normalized, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("生成历史 ZQ 素材 %s 的客户端载荷：%w", asset.ID, err)
+		}
+		if err := tx.Model(&model.Asset{}).Where("id = ?", asset.ID).Updates(map[string]any{
+			"kind": kind, "category": model.NormalizeAssetCategory(asset.Category, kind), "payload_json": string(normalized),
+		}).Error; err != nil {
+			return fmt.Errorf("修复历史 ZQ 素材 %s：%w", asset.ID, err)
+		}
+	}
+	return nil
+}
+
+func legacyClientAssetKind(kind string, mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "video":
+		return "video"
+	case "audio":
+		return "audio"
+	case "image":
+		return "image"
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "video/") {
+		return "video"
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "audio/") {
+		return "audio"
+	}
+	return "image"
 }
 
 func migrateSchemaV5(tx *gorm.DB) error {

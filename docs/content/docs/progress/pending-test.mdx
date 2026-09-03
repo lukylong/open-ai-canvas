@@ -5,6 +5,12 @@ description: 影策已实现功能的手工验证清单与未确认边界
 
 # 待测试
 
+## 历史迁移素材账号加载修复
+
+- [x] schema v6 从 AssetVersion、AssetRepresentation 和 Resource 重建早期 ZQ 迁移素材缺失的 `id/kind/title/data` 客户端载荷；生产数据库副本验证精确修复 92 条、资产总数不变且 `integrity_check=ok`。
+- [x] 前端持久化恢复和远端快照会隔离仍不完整的素材记录，`@` 素材候选构建遇到缺失 `data` 时跳过该条而不会触发页面级异常；专项测试和生产构建通过。
+- [ ] 使用原受影响账号刷新素材库、画布和创作页，确认旧图片/视频可见、`@` 素材选择正常且控制台不再出现 `Cannot use 'in' operator to search for 'storageKey' in undefined`。
+
 ## 共享系列素材库与系列卡片
 
 - [x] 新增全局止损开关、账号级总权限、管理员审计、共享系列/素材、上传批次/文件项、项目稳定引用和 schema v4；后端权限、边界、幂等、ZIP 部分成功及不安全路径专项测试通过。

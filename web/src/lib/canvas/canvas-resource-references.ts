@@ -58,6 +58,7 @@ export function normalizeCanvasNodeMentionTokens(prompt: string, references: Can
 export function buildAssetMentionReferences(assets: Asset[]): CanvasResourceReference[] {
     return assets.flatMap((asset): CanvasResourceReference[] => {
         if (asset.kind === "model") return [];
+        if (!asset.data || typeof asset.data !== "object") return [];
         const kind: CanvasResourceKind = asset.kind === "entity" ? "character" : asset.kind;
         const previewUrl = asset.kind === "image" ? asset.data.dataUrl : asset.kind === "video" ? canvasVideoAssetPreviewUrl(asset.data.url, asset.coverUrl) : asset.coverUrl;
         const text = asset.kind === "text" ? asset.data.content : undefined;

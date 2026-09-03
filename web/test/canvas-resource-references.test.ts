@@ -78,6 +78,11 @@ describe("collectUpstreamVideoNodes", () => {
 });
 
 describe("canvas resource mention slots", () => {
+    test("缺少 data 的历史迁移素材不会拖垮整个账号页面", () => {
+        const malformed = { source: "generated", metadata: { source_system: "zq-media-studio" } };
+        expect(buildAssetMentionReferences([malformed as never])).toEqual([]);
+    });
+
     test("素材库视频优先使用封面，没有封面时保留首帧视频回退源", () => {
         const poster = buildAssetMentionReferences([{
             id: "video-with-poster",

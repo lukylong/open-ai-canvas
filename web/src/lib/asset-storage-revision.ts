@@ -8,6 +8,22 @@ export type AssetStorageDocument = {
     tombstones: { assets: Record<string, number> };
 };
 
+const assetKinds = new Set(["text", "image", "video", "audio", "model", "entity"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isUsableAssetRecord(value: unknown): value is Asset {
+    if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) return false;
+    if (typeof value.kind !== "string" || !assetKinds.has(value.kind)) return false;
+    return isRecord(value.data);
+}
+
+export function normalizeAssetRecords(value: unknown): Asset[] {
+    return Array.isArray(value) ? value.filter(isUsableAssetRecord).map(normalizeAssetRecord) : [];
+}
+
 export function normalizeAssetRecord(asset: Asset): Asset {
     const category = normalizeAssetCategory(asset.category, defaultAssetCategoryForKind(asset.kind));
     if (Array.isArray(asset.tags) && asset.tags.every((tag) => typeof tag === "string") && asset.category === category) return asset;
@@ -19,7 +35,7 @@ export function normalizeAssetRecord(asset: Asset): Asset {
 }
 
 function normalizeAssets(assets: Asset[]) {
-    return assets.map(normalizeAssetRecord);
+    return normalizeAssetRecords(assets);
 }
 
 export function parseAssetStorageDocument(value: string | null, fallback: Asset[] = []): AssetStorageDocument {
@@ -56,10 +72,6 @@ export function serializeAssetStorageDocument(document: AssetStorageDocument) {
 function deepEqual(left: unknown, right: unknown) {
     if (Object.is(left, right)) return true;
     return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function mergeValue(base: unknown, local: unknown, durable: unknown): unknown {

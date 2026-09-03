@@ -15,7 +15,7 @@ description: 影策后端核心持久化表与状态边界
 
 容器内命令 `migrate-schema up` 应用缺失迁移，`migrate-schema status` 输出当前和期望版本，`migrate-schema verify` 只检查兼容性。`CANVAS_AUTO_MIGRATE=true` 仅用于开发和旧部署兼容；受管生产部署设置为 `false`，并由 Compose 的一次性 `migrate` 服务先完成迁移。后续迁移必须新增版本，不得修改已经发布迁移的实现或校验和。
 
-当前结构版本为 5。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引；版本 3 `asset_taxonomy_candidate_identity` 为资产候选增加规范化名称和来源，收敛资产分类，并为待确认候选建立项目内部分唯一索引；版本 4 `shared_asset_library` 新增账号权限字段、共享系列、共享素材、上传批次/文件项和项目稳定引用表；版本 5 `shared_asset_storage_scope` 将共享素材 Resource 标记为 `shared-library`，从上传者和使用者的个人账号容量中剥离。
+当前结构版本为 6。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引；版本 3 `asset_taxonomy_candidate_identity` 为资产候选增加规范化名称和来源，收敛资产分类，并为待确认候选建立项目内部分唯一索引；版本 4 `shared_asset_library` 新增账号权限字段、共享系列、共享素材、上传批次/文件项和项目稳定引用表；版本 5 `shared_asset_storage_scope` 将共享素材 Resource 标记为 `shared-library`，从上传者和使用者的个人账号容量中剥离；版本 6 `legacy_zq_asset_client_payload` 从资产版本及 Resource 重建早期 ZQ 迁移素材缺失的客户端 `data`、身份和媒体字段，避免旧账号加载素材引用时发生页面级异常。
 
 版本 3 会将 `wardrobe`、`weapon`、`accessory` 迁移为 `prop`，将 `style` 迁移为 `material`，并把原先归入 `other` 的图片、视频、音频和 3D 模型迁移为 `material`。迁移只合并重复的待确认候选：保留最早记录，其余标记为 `ignored`；已经确认的资产不会被自动删除或归并。
 

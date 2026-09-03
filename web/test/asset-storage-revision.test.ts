@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { normalizeAssetRecord, parseAssetStorageDocument } from "@/lib/asset-storage-revision";
+import { normalizeAssetRecord, normalizeAssetRecords, parseAssetStorageDocument } from "@/lib/asset-storage-revision";
 import type { Asset } from "@/stores/use-asset-store";
 
 const legacyAsset = {
@@ -29,5 +29,18 @@ describe("asset storage revision", () => {
 
         expect(document.state.assets[0]?.tags).toEqual([]);
         expect(() => document.state.assets[0]?.tags.join(" ")).not.toThrow();
+    });
+
+    test("isolates malformed migrated assets instead of crashing account hydration", () => {
+        const malformed = { source: "generated", metadata: { source_system: "zq-media-studio" } };
+        expect(normalizeAssetRecords([malformed, legacyAsset])).toEqual([normalizeAssetRecord(legacyAsset)]);
+
+        const document = parseAssetStorageDocument(JSON.stringify({
+            state: { assets: [malformed, legacyAsset] },
+            version: 1,
+            storageRevision: 4,
+            tombstones: { assets: {} },
+        }));
+        expect(document.state.assets.map((asset) => asset.id)).toEqual([legacyAsset.id]);
     });
 });

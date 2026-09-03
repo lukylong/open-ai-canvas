@@ -1,9 +1,11 @@
 package database
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"infinite-canvas/backend/internal/model"
 
@@ -110,6 +112,53 @@ func TestMigrateSchemaV3NormalizesLegacyAccessoryCategory(t *testing.T) {
 	}
 	if candidate.NameKey != model.AssetCandidateNameKey(candidate.Name) {
 		t.Fatalf("candidate name key = %q", candidate.NameKey)
+	}
+}
+
+func TestMigrateSchemaV6RepairsLegacyZQAssetClientPayload(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-zq-asset-payload?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Resource{}, &model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.September, 3, 1, 2, 3, 0, time.UTC)
+	resource := model.Resource{ID: "zqr_legacy", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady, MimeType: "image/png", Size: 77, Width: 2, Height: 2, CreatedAt: now, UpdatedAt: now}
+	asset := model.Asset{ID: "zqa_legacy", UserID: "user-1", Kind: "reference", Category: model.AssetCategoryOther, Status: model.AssetVersionStatusConfirmed, PrimaryVersionID: "zqv_legacy", Title: "旧参考图", PayloadJSON: `{"source":"upload","metadata":{"source_system":"zq-media-studio"}}`, CreatedAt: now, UpdatedAt: now}
+	version := model.AssetVersion{ID: asset.PrimaryVersionID, AssetID: asset.ID, Version: 1, Status: model.AssetVersionStatusConfirmed, CreatedAt: now, UpdatedAt: now}
+	representation := model.AssetRepresentation{ID: "zqp_legacy", AssetVersionID: version.ID, ResourceID: resource.ID, MediaType: "image", Role: "original", CreatedAt: now}
+	for _, value := range []any{&resource, &asset, &version, &representation} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateSchemaV6(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&asset, "id = ?", asset.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(asset.PayloadJSON), &payload); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := payload["data"].(map[string]any)
+	if !ok || data["storageKey"] != "resource:"+resource.ID || data["dataUrl"] != "/api/resources/"+resource.ID+"/file" {
+		t.Fatalf("repaired payload data = %#v", payload["data"])
+	}
+	if asset.Kind != "image" || payload["id"] != asset.ID || payload["kind"] != "image" || payload["title"] != asset.Title {
+		t.Fatalf("repaired asset = %#v, payload = %#v", asset, payload)
+	}
+	before := asset.PayloadJSON
+	if err := migrateSchemaV6(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&asset, "id = ?", asset.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if asset.PayloadJSON != before {
+		t.Fatal("migration v6 is not idempotent")
 	}
 }
 
