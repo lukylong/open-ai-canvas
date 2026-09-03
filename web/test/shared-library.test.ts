@@ -10,7 +10,7 @@ const policy: SharedUploadPolicy = {
     allowedExtensions: [".jpg", ".jpeg", ".png", ".webp"], allowedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
     singleMaxBytes: 50 << 20, batchMaxFiles: 1000, batchMaxBytes: 5 * 2 ** 30, zipMaxBytes: 2 * 2 ** 30,
     zipExtractedMaxFiles: 1000, zipExtractedMaxBytes: 5 * 2 ** 30, zipMaxEntries: 5000, zipMaxCompressionRatio: 100,
-    uploadUrlTtlSeconds: 900, defaultConcurrency: 4, maxConcurrency: 6, description: "policy",
+    uploadUrlTtlSeconds: 900, defaultConcurrency: 4, maxConcurrency: 6, capacityScope: "shared", description: "policy",
 };
 
 function fakeFile(name: string, size: number, type = "image/png") {

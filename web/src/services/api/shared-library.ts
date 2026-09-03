@@ -47,6 +47,7 @@ export type SharedUploadPolicy = {
     uploadUrlTtlSeconds: number;
     defaultConcurrency: number;
     maxConcurrency: number;
+    capacityScope: "shared";
     description: string;
 };
 

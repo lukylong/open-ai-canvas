@@ -39,6 +39,23 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	if !db.Migrator().HasColumn(&model.User{}, "SharedLibraryEnabled") {
 		t.Fatal("schema migration v4 did not add users.shared_library_enabled")
 	}
+	resource := model.Resource{ID: "shared-resource-v5", UserID: "user-1", Size: 123}
+	asset := model.SharedAsset{ID: "shared-asset-v5", SeriesID: "series-1", UploaderUserID: "user-1", ResourceID: resource.ID, ThumbnailResourceID: resource.ID, UploadItemID: "item-v5"}
+	if err := db.Create(&resource).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaV5(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&resource, "id = ?", resource.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if resource.SourceSystem != model.SharedLibraryResourceSourceSystem {
+		t.Fatalf("schema migration v5 source_system = %q", resource.SourceSystem)
+	}
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("migration should be idempotent: %v", err)
 	}

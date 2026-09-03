@@ -10,12 +10,13 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 4
+const CurrentSchemaVersion int64 = 5
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
 const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v3-20260831-r1"
 const sharedAssetLibraryChecksum = "sha256:shared-asset-library-v4-20260902"
+const sharedAssetStorageScopeChecksum = "sha256:shared-asset-storage-scope-v5-20260903"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -46,6 +47,19 @@ var schemaMigrations = []migration{
 	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum, apply: migrateSchemaV2},
 	{version: 3, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
 	{version: 4, name: "shared_asset_library", checksum: sharedAssetLibraryChecksum, apply: migrateSchemaV4},
+	{version: 5, name: "shared_asset_storage_scope", checksum: sharedAssetStorageScopeChecksum, apply: migrateSchemaV5},
+}
+
+func migrateSchemaV5(tx *gorm.DB) error {
+	return tx.Exec(`
+		UPDATE resources
+		SET source_system = ?
+		WHERE id IN (
+			SELECT resource_id FROM shared_assets
+			UNION
+			SELECT thumbnail_resource_id FROM shared_assets WHERE thumbnail_resource_id <> ''
+		)
+	`, model.SharedLibraryResourceSourceSystem).Error
 }
 
 func migrateSchemaV4(tx *gorm.DB) error {

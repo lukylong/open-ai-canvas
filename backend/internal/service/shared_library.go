@@ -51,6 +51,7 @@ type SharedUploadPolicy struct {
 	UploadURLTTLSeconds    int      `json:"uploadUrlTtlSeconds"`
 	DefaultConcurrency     int      `json:"defaultConcurrency"`
 	MaxConcurrency         int      `json:"maxConcurrency"`
+	CapacityScope          string   `json:"capacityScope"`
 	Description            string   `json:"description"`
 }
 
@@ -95,7 +96,8 @@ func SharedLibraryUploadPolicy() SharedUploadPolicy {
 		ZIPMaxBytes: sharedZIPMaxBytes, ZIPExtractedMaxFiles: sharedBatchMaxFiles, ZIPExtractedMaxBytes: sharedBatchMaxBytes,
 		ZIPMaxEntries: sharedZIPMaxEntries, ZIPMaxCompressionRatio: sharedZIPMaxRatio,
 		UploadURLTTLSeconds: int(sharedUploadURLTTL.Seconds()), DefaultConcurrency: 4, MaxConcurrency: 6,
-		Description: "支持 JPG、PNG、WebP｜单张最大50MB｜普通批量最多1000张、合计5GB｜ZIP最大2GB，解压后最多1000张/5GB。",
+		CapacityScope: "shared",
+		Description:   "支持 JPG、PNG、WebP｜单张最大50MB｜普通批量最多1000张、合计5GB｜ZIP最大2GB，解压后最多1000张/5GB。共享素材使用平台共享空间，不占上传者或使用者的个人账号容量。",
 	}
 }
 

@@ -989,9 +989,9 @@ func (r *Repository) UserStoredFileBytes(userID string) (int64, error) {
 	var total int64
 	err := r.db.Raw(`
 		SELECT
-			(SELECT COALESCE(SUM(size), 0) FROM resources WHERE user_id = ?)
+			(SELECT COALESCE(SUM(size), 0) FROM resources WHERE user_id = ? AND COALESCE(source_system, '') <> ?)
 			+ (SELECT COALESCE(SUM(size), 0) FROM session_files WHERE user_id = ?)
-	`, userID, userID).Scan(&total).Error
+	`, userID, model.SharedLibraryResourceSourceSystem, userID).Scan(&total).Error
 	return total, err
 }
 

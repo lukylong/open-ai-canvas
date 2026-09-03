@@ -76,6 +76,9 @@ func TestAccountFileStorageUsageUsesStoredFilePolicy(t *testing.T) {
 	if err := svc.repo.Create(&model.SessionFile{ID: "session-file-1", UserID: "user-1", SessionID: "session-1", Size: 2 << 20}); err != nil {
 		t.Fatal(err)
 	}
+	if err := svc.repo.Create(&model.Resource{ID: "shared-resource-1", UserID: "user-1", SourceSystem: model.SharedLibraryResourceSourceSystem, Status: model.ResourceStatusReady, Size: 7 << 20}); err != nil {
+		t.Fatal(err)
+	}
 	usage, err := svc.AccountFileStorageUsage("user-1")
 	if err != nil {
 		t.Fatal(err)
@@ -83,4 +86,16 @@ func TestAccountFileStorageUsageUsesStoredFilePolicy(t *testing.T) {
 	if usage.UsedBytes != 5<<20 || usage.TotalBytes != gigabytes(defaultRuntimePolicy().Resource.StoredFileGB) {
 		t.Fatalf("AccountFileStorageUsage() = %#v", usage)
 	}
+}
+
+func TestReserveUserUploadQuotaExcludesSharedLibraryFiles(t *testing.T) {
+	svc := newResourceTestService(t)
+	if err := svc.repo.Create(&model.Resource{ID: "shared-resource-1", UserID: "user-1", SourceSystem: model.SharedLibraryResourceSourceSystem, Status: model.ResourceStatusReady, Size: gigabytes(defaultRuntimePolicy().Resource.StoredFileGB)}); err != nil {
+		t.Fatal(err)
+	}
+	day, err := svc.reserveUserUploadQuota("user-1", 1)
+	if err != nil {
+		t.Fatalf("reserveUserUploadQuota() error = %v", err)
+	}
+	svc.releaseUserUploadQuota("user-1", day, 1)
 }

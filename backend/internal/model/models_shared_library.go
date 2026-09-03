@@ -8,6 +8,8 @@ type SharedAssetUploadBatchStatus string
 type SharedAssetUploadItemStatus string
 
 const (
+	SharedLibraryResourceSourceSystem = "shared-library"
+
 	SharedAssetSeriesPreparing SharedAssetSeriesStatus = "preparing"
 	SharedAssetSeriesReady     SharedAssetSeriesStatus = "ready"
 	SharedAssetSeriesArchived  SharedAssetSeriesStatus = "archived"

@@ -18,7 +18,7 @@ export function AssetStorageUsage() {
     const full = Boolean(usage && usage.usedBytes >= usage.totalBytes);
 
     return (
-        <section className={`assets-storage-usage${full ? " is-full" : ""}${usage?.usedBytes ? " has-usage" : ""}`} aria-label="账号文件容量" aria-busy={query.isPending} title="包含素材文件和 Agent 会话附件">
+        <section className={`assets-storage-usage${full ? " is-full" : ""}${usage?.usedBytes ? " has-usage" : ""}`} aria-label="账号文件容量" aria-busy={query.isPending} title="包含个人素材文件和 Agent 会话附件；共享素材使用平台共享空间，不占个人账号容量">
             <span className="assets-storage-usage-icon" aria-hidden="true">
                 <HardDrive />
             </span>

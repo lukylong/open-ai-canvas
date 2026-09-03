@@ -15,7 +15,7 @@ description: 影策后端核心持久化表与状态边界
 
 容器内命令 `migrate-schema up` 应用缺失迁移，`migrate-schema status` 输出当前和期望版本，`migrate-schema verify` 只检查兼容性。`CANVAS_AUTO_MIGRATE=true` 仅用于开发和旧部署兼容；受管生产部署设置为 `false`，并由 Compose 的一次性 `migrate` 服务先完成迁移。后续迁移必须新增版本，不得修改已经发布迁移的实现或校验和。
 
-当前结构版本为 4。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引；版本 3 `asset_taxonomy_candidate_identity` 为资产候选增加规范化名称和来源，收敛资产分类，并为待确认候选建立项目内部分唯一索引；版本 4 `shared_asset_library` 新增账号权限字段、共享系列、共享素材、上传批次/文件项和项目稳定引用表。
+当前结构版本为 5。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引；版本 3 `asset_taxonomy_candidate_identity` 为资产候选增加规范化名称和来源，收敛资产分类，并为待确认候选建立项目内部分唯一索引；版本 4 `shared_asset_library` 新增账号权限字段、共享系列、共享素材、上传批次/文件项和项目稳定引用表；版本 5 `shared_asset_storage_scope` 将共享素材 Resource 标记为 `shared-library`，从上传者和使用者的个人账号容量中剥离。
 
 版本 3 会将 `wardrobe`、`weapon`、`accessory` 迁移为 `prop`，将 `style` 迁移为 `material`，并把原先归入 `other` 的图片、视频、音频和 3D 模型迁移为 `material`。迁移只合并重复的待确认候选：保留最早记录，其余标记为 `ignored`；已经确认的资产不会被自动删除或归并。
 
@@ -35,7 +35,7 @@ description: 影策后端核心持久化表与状态边界
 | --- | --- | --- |
 | `users.shared_library_enabled` | 账号级共享素材库总权限 | 默认关闭；管理员隐式拥有；关闭后列表、文件、缩略图、项目引用和新任务引用立即重新拒绝 |
 | `shared_asset_series` | 保存系列名称、封面、所有者和开放状态 | 普通账号只能修改、归档自己的系列；管理员可管理全部 |
-| `shared_assets` | 保存系列内图片、Resource、尺寸、SHA-256、版本和状态 | `upload_item_id` 唯一，重复完成或 Worker 重放不会创建第二份素材 |
+| `shared_assets` | 保存系列内图片、Resource、尺寸、SHA-256、版本和状态 | `upload_item_id` 唯一，重复完成或 Worker 重放不会创建第二份素材；文件计入平台共享空间，不占上传者或使用者个人账号容量 |
 | `shared_asset_upload_batches` | 上传与 ZIP 导入批次的唯一状态源 | PostgreSQL 保存状态、租约、心跳、尝试次数和下次重试时间；Redis不作为正确性依赖 |
 | `shared_asset_upload_items` | 单文件上传、校验、跳过和失败明细 | `(batch_id, client_id)` 唯一；已完成项在续传和 Worker 恢复时跳过 |
 | `project_shared_asset_links` | 项目对共享素材版本的稳定引用 | 不复制到个人库，也不保存永久对象存储 URL；读取时重新校验当前账号权限 |

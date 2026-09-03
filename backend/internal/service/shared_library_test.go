@@ -125,6 +125,13 @@ func TestSharedUploadBoundaryAndIdempotentComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sharedResource, err := svc.repo.Resource(sharedAsset.ResourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sharedResource.SourceSystem != model.SharedLibraryResourceSourceSystem {
+		t.Fatalf("shared resource source system = %q", sharedResource.SourceSystem)
+	}
 	media := providerMedia{AssetReference: &providerAssetReference{Source: "shared", SharedAssetID: sharedAsset.ID, Version: sharedAsset.Version}}
 	if err := svc.hydrateProviderMedia(member.ID, &media, false); err != nil {
 		t.Fatalf("hydrate shared provider media: %v", err)
