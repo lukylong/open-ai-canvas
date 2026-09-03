@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -152,6 +153,16 @@ func TestSharedUploadBoundaryAndIdempotentComplete(t *testing.T) {
 	}
 	if err := svc.hydrateProviderMedia(member.ID, &providerMedia{AssetReference: &providerAssetReference{Source: "shared", SharedAssetID: sharedAsset.ID, Version: sharedAsset.Version}}, false); err == nil {
 		t.Fatal("revoked user retained generation reference access")
+	}
+}
+
+func TestFinishSharedStagingReadIgnoresProviderClosedBody(t *testing.T) {
+	if err := finishSharedStagingRead(nil, &os.PathError{Op: "close", Path: "staging.upload", Err: os.ErrClosed}); err != nil {
+		t.Fatalf("finishSharedStagingRead() error = %v", err)
+	}
+	storeErr := errors.New("store failed")
+	if err := finishSharedStagingRead(storeErr, os.ErrClosed); !errors.Is(err, storeErr) {
+		t.Fatalf("finishSharedStagingRead() error = %v", err)
 	}
 }
 

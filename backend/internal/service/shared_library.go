@@ -859,10 +859,10 @@ func (s *Service) importSharedStagedImageNamed(batch *model.SharedAssetUploadBat
 		width, height = config.Width, config.Height
 	}
 	resource, err := s.storeSharedResource(batch.OwnerUserID, "image", item.FileName, mimeType, item.ActualSize, width, height, 0, file)
-	closeErr := file.Close()
-	if err == nil {
-		err = closeErr
-	}
+	// S3/COS clients may close the request body after upload. Closing a read-only
+	// staging handle a second time must not turn an already persisted object into
+	// a failed shared-asset import.
+	err = finishSharedStagingRead(err, file.Close())
 	if err != nil {
 		return err
 	}
@@ -874,6 +874,16 @@ func (s *Service) importSharedStagedImageNamed(batch *model.SharedAssetUploadBat
 		return err
 	}
 	_ = os.Remove(item.StagingPath)
+	return nil
+}
+
+func finishSharedStagingRead(storeErr error, closeErr error) error {
+	if storeErr != nil {
+		return storeErr
+	}
+	if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+		return closeErr
+	}
 	return nil
 }
 
