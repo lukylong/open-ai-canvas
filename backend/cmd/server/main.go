@@ -113,6 +113,7 @@ func run(ctx context.Context) error {
 	registerSystemStatusRoutes(api, status)
 	handler.RegisterOAuthCallbackRoutes(r, svc)
 	handler.RegisterAuthRoutes(api, svc)
+	handler.RegisterAppearanceRoutes(api, svc)
 	handler.RegisterFeatureAvailabilityRoutes(api, svc)
 	handler.RegisterResponseInterceptionRoutes(api, svc)
 	handler.RegisterAdminRoutes(api, svc)
@@ -121,6 +122,7 @@ func run(ctx context.Context) error {
 	handler.RegisterAdminUpdateRoutes(api, svc)
 	handler.RegisterAnnouncementRoutes(api, svc)
 	handler.RegisterFinanceRoutes(api, svc)
+	handler.RegisterPaymentRoutes(api, svc)
 	handler.RegisterLibTVRoutes(api, svc)
 	handler.RegisterTapNowRoutes(api, svc)
 	// 登录态模型目录代理：避免浏览器直连各上游时分别处理 CORS。
@@ -135,6 +137,7 @@ func run(ctx context.Context) error {
 	handler.RegisterSessionRoutes(api, svc)
 	handler.RegisterSkillRoutes(api, svc)
 	handler.RegisterUserDataRoutes(api, svc)
+	handler.RegisterChunkedUploadRoutes(api, svc)
 	handler.RegisterDiagnosticsRoutes(api, svc)
 	handler.RegisterPluginRoutes(api, svc)
 	projectAPI := api.Group("")
@@ -154,10 +157,12 @@ func run(ctx context.Context) error {
 	}
 	httpServer := &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second}
 	svc.StartWorker()
+	// 启动后回填存量视频的播放副本转码（幂等，无待处理项即退出）。
+	go svc.BackfillPlaybackTranscodes()
 	status.markStarted()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpServer.Serve(listener) }()
-	log.Printf("影策 backend listening on %s", addr)
+	log.Printf("backend listening on %s", addr)
 
 	var serveFailure error
 	select {
@@ -187,7 +192,7 @@ func run(ctx context.Context) error {
 	if err := errors.Join(shutdownFailures...); err != nil {
 		return err
 	}
-	log.Printf("影策 backend stopped gracefully")
+	log.Printf("backend stopped gracefully")
 	return nil
 }
 

@@ -1,9 +1,38 @@
 import type { Asset } from "@/stores/use-asset-store";
 
 export const PLUGIN_API_VERSION = "yingce.plugin/v1" as const;
+export const PLUGIN_API_VERSION_V2 = "yingce.plugin/v2" as const;
 
-export type PluginContributionKind = "provider" | "workflow" | "canvas-node" | "transform" | "command" | "asset-source" | "usage-observer" | "ai-capability" | "agent" | "import-export";
-export type PluginSurface = "node" | "fullscreen" | "hybrid" | "asset-source" | "settings";
+export type EditorSlotKind =
+    | "timeline-panel"
+    | "preview-renderer"
+    | "inspector"
+    | "asset-ingest"
+    | "subtitle-tool"
+    | "transcription-provider"
+    | "export-renderer"
+    | "ai-assistant";
+
+export type EditorSlotContribution = {
+    slot: EditorSlotKind;
+    priority?: number;
+};
+
+export type EditorPluginPermission = "timeline.read" | "timeline.command" | "export.run";
+
+export type PluginContributionsV2 = PluginContributions & {
+    editorSlots?: EditorSlotContribution[];
+};
+
+// 注意：必须把 permissions 一并 Omit 掉再完全替换，否则数组交叉类型会被归约为 v1 的 PluginPermission[]，v2 权限字面量无法赋值。
+export type PluginManifestV2 = Omit<PluginManifest, "apiVersion" | "contributes" | "permissions"> & {
+    apiVersion: typeof PLUGIN_API_VERSION_V2;
+    permissions: Array<PluginPermission | EditorPluginPermission>;
+    contributes: PluginContributionsV2;
+};
+
+export type PluginContributionKind = "provider" | "payment-provider" | "workflow" | "canvas-node" | "transform" | "command" | "asset-source" | "usage-observer" | "ai-capability" | "agent" | "import-export";
+export type PluginSurface = "node" | "fullscreen" | "hybrid" | "asset-source" | "settings" | "wallet";
 export type ProtocolCapability = "text" | "image" | "video" | "audio";
 export type ProtocolScope = "admin.system-channel" | "user.custom-channel" | "canvas" | "creation" | "agent" | string;
 export type PluginRuntime = "declarative" | "sandbox" | "worker" | "trusted-backend";
@@ -60,6 +89,13 @@ export type PluginWorkflowContribution = {
     parameters: PluginParameter[];
     defaults?: Record<string, string | number | boolean>;
 };
+export type PluginPaymentProviderContribution = {
+    id: string;
+    label: string;
+    icon: string;
+    checkoutMode: "qr_code" | "redirect";
+    expiryPolicy: { defaultMinutes: number; minMinutes: number; maxMinutes: number };
+};
 export type PluginCanvasNodeContribution = {
     id: string;
     label: string;
@@ -67,6 +103,10 @@ export type PluginCanvasNodeContribution = {
     defaultSize: { width: number; height: number };
     schema: Record<string, unknown>;
     renderer: "declarative" | "sandbox";
+    /** Optional input contract for nodes that consume one media kind. */
+    acceptsInputKind?: "image" | "video" | "audio" | "text";
+    /** Analysis/sink nodes can hide the right-side output connection. */
+    showOutputConnection?: boolean;
 };
 export type PluginTransformContribution = {
     id: string;
@@ -76,6 +116,7 @@ export type PluginTransformContribution = {
 };
 export type PluginContributions = {
     providers?: PluginProviderContribution[];
+    paymentProviders?: PluginPaymentProviderContribution[];
     workflows?: PluginWorkflowContribution[];
     canvasNodes?: PluginCanvasNodeContribution[];
     transforms?: PluginTransformContribution[];
@@ -97,6 +138,10 @@ export type PluginPermission =
     | "ai.text"
     | "media.read"
     | "usage.read"
+    | "payment.create"
+    | "payment.query"
+    | "payment.close"
+    | "payment.reconcile"
     | "external.open";
 
 export type PluginManifest = {
@@ -124,9 +169,7 @@ export type PluginStorage = {
     remove(key: string): Promise<void>;
 };
 
-export type PluginTextContentPart =
-    | { type: "text"; text: string }
-    | { type: "image_url"; image_url: { url: string } };
+export type PluginTextContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
 export type PluginTextMessage = {
     role: "system" | "user" | "assistant";
@@ -181,8 +224,8 @@ export type PluginHostServices = {
 };
 
 export type PluginHostContext = {
-    manifest: PluginManifest;
-    permissions: ReadonlySet<PluginPermission>;
+    manifest: PluginManifest | PluginManifestV2;
+    permissions: ReadonlySet<PluginPermission | EditorPluginPermission>;
     storage: PluginStorage;
     config: Readonly<PluginInstallation["config"]>;
     services?: PluginHostServices;
@@ -218,10 +261,7 @@ export type PromptOptimizationResult = {
 };
 
 export type PromptOptimizerProvider = {
-    optimize: (
-        input: PromptOptimizationInput,
-        options?: { signal?: AbortSignal; onDelta?: (text: string) => void },
-    ) => Promise<PromptOptimizationResult>;
+    optimize: (input: PromptOptimizationInput, options?: { signal?: AbortSignal; onDelta?: (text: string) => void }) => Promise<PromptOptimizationResult>;
 };
 
 export type AssetSourceQuery = {
@@ -276,16 +316,20 @@ export type AssetSourceProvider = {
 };
 
 export type RegisteredPlugin = {
-    manifest: PluginManifest;
+    /** v1 或 v2 插件清单；v2 清单结构为 v1 超集（含 editorSlots 声明）。 */
+    manifest: PluginManifest | PluginManifestV2;
     source?: "bundled" | "uploaded" | string;
     activate?: (context: PluginHostContext) => Promise<void> | void;
     deactivate?: (context: PluginHostContext) => Promise<void> | void;
     createAssetSource?: (context: PluginHostContext) => AssetSourceProvider;
     createPromptOptimizer?: (context: PluginHostContext) => PromptOptimizerProvider;
+    /** v2 插件由注册器从 manifest 提取的编辑器插槽声明（v1 插件无此字段）。 */
+    editorSlots?: EditorSlotContribution[];
+    /** v2 插件 UI 插槽的实际渲染函数由插件 activate() 阶段经 registerEditorSlot 提供。 */
 };
 
 export type PluginInstallation = {
-    manifest: PluginManifest;
+    manifest: PluginManifest | PluginManifestV2;
     enabled: boolean;
     config: Record<string, string | number | boolean>;
     installedAt: string;

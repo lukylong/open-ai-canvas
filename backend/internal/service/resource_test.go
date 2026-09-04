@@ -3,14 +3,18 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"hash/crc64"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -90,6 +94,47 @@ func TestAliyunOSSUploadRequestStillUsesEndpointWhenCDNConfigured(t *testing.T) 
 	}
 	if req.URL.Host != "private-bucket.oss-cn-test.aliyuncs.com" || req.URL.Path != "/users/u-1/image/test.png" {
 		t.Fatalf("Aliyun OSS upload URL = %q", req.URL.String())
+	}
+}
+
+func TestNewOSSRequestBodyCloseDoesNotCloseCallerFile(t *testing.T) {
+	// 服务端提前返回 403（不读 body）时，http.Transport 会关闭 Request.Body。
+	// newOSSRequest 必须用 no-op close 包装请求体，否则调用方持有的 *os.File
+	// 会被关掉，OSS 失败后的“降级本地存储”Seek 重读将报 file already closed。
+	f, err := os.CreateTemp(t.TempDir(), "merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("payload-bytes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	req, err := newOSSRequest(http.MethodPut, ossSettingValue{
+		Provider: aliyunOSSProvider, Endpoint: "https://oss-cn-test.aliyuncs.com",
+		Bucket: "private-bucket", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	}, "users/u-1/video/clip.mp4", "video/mp4", f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Body == nil {
+		t.Fatal("newOSSRequest() body is nil")
+	}
+	// 模拟 Transport 在服务端提前响应后关闭请求体：
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close request body: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("caller file was closed by transport: %v", err)
+	}
+	got, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "payload-bytes" {
+		t.Fatalf("payload after body close = %q", got)
 	}
 }
 
@@ -831,6 +876,92 @@ func newResourceTestService(t *testing.T) *Service {
 	return &Service{repo: repository.New(db), dataDir: t.TempDir()}
 }
 
+func TestStoreResourceReusesReadyUploadIdentity(t *testing.T) {
+	svc := newResourceTestService(t)
+	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:logical-upload"})
+	first, stored, err := svc.storeResource("user-1", "image", "first.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored {
+		t.Fatal("first upload was not stored")
+	}
+	second, stored, err := svc.storeResource("user-1", "image", "second.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored || second.ID != first.ID || second.ObjectKey != first.ObjectKey {
+		t.Fatalf("idempotent upload = %#v, stored=%v; first=%#v", second, stored, first)
+	}
+	resources, err := svc.repo.Resources("user-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("resource count = %d, want 1", len(resources))
+	}
+}
+
+func TestRetryStoredResourceKeepsOriginalObjectKey(t *testing.T) {
+	svc := newResourceTestService(t)
+	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:retry-upload"})
+	failed := &model.Resource{
+		ID: "resource-failed", UserID: "user-1", Kind: "image", Status: model.ResourceStatusFailed,
+		Provider: "local", ObjectKey: "users/user-1/image/fixed.png", MimeType: "image/png", Size: 7,
+		UploadKey: uploadKey, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := svc.repo.CreateResource(failed); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, bytes.NewReader([]byte("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.ID != failed.ID || retried.ObjectKey != "users/user-1/image/fixed.png" || retried.Status != model.ResourceStatusReady {
+		t.Fatalf("retried resource = %#v", retried)
+	}
+	resources, err := svc.repo.Resources("user-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("resource count = %d, want 1", len(resources))
+	}
+	day := time.Now().UTC().Format("2006-01-02")
+	usage, err := svc.repo.DailyUploadBytes("user-1", day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage != 7 {
+		t.Fatalf("daily upload usage = %d, want 7", usage)
+	}
+}
+
+func TestRetryStoredResourceReleasesDailyQuotaAfterFailure(t *testing.T) {
+	svc := newResourceTestService(t)
+	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:failed-retry"})
+	failed := &model.Resource{
+		ID: "resource-failed-retry", UserID: "user-1", Kind: "image", Status: model.ResourceStatusFailed,
+		Provider: "local", ObjectKey: "users/user-1/image/failed.png", MimeType: "image/png", Size: 7,
+		UploadKey: uploadKey, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := svc.repo.CreateResource(failed); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, iotest.ErrReader(errors.New("write failed")))
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("retryStoredResource() error = %v", err)
+	}
+	day := time.Now().UTC().Format("2006-01-02")
+	usage, usageErr := svc.repo.DailyUploadBytes("user-1", day)
+	if usageErr != nil {
+		t.Fatal(usageErr)
+	}
+	if usage != 0 {
+		t.Fatalf("daily upload usage = %d, want 0", usage)
+	}
+}
+
 func TestLegacyMediaMigrationSkipsInvalidDataURL(t *testing.T) {
 	svc := &Service{}
 	input := map[string]interface{}{
@@ -874,7 +1005,7 @@ func TestPersistGeneratedMediaAppliesStoredFileQuota(t *testing.T) {
 	_, err := svc.persistGeneratedMediaResult("user-1", map[string]interface{}{
 		"image": map[string]interface{}{"dataUrl": "data:image/png;base64,YQ=="},
 	})
-	if err == nil || !strings.Contains(err.Error(), "2GB 上限") {
+	if err == nil || !strings.Contains(err.Error(), "20GB 上限") {
 		t.Fatalf("persistGeneratedMediaResult() error = %v", err)
 	}
 }

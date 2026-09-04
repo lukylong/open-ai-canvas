@@ -1,5 +1,5 @@
 import { Dropdown, Input } from "antd";
-import { Download, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Download, LoaderCircle, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import type { KeyboardEvent } from "react";
 
 import { ProjectPreview } from "@/components/canvas/canvas-project-card";
@@ -12,10 +12,12 @@ type CanvasFolderCardProps = {
     project: CanvasProject;
     projectName?: string;
     onClick: () => void;
+    onPrefetch?: () => void;
+    opening?: boolean;
 };
 
 /** 画布库中的文件夹封面：单一卡片表面承载预览和信息，避免相邻卡片互相侵入。 */
-export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolderCardProps) {
+export function CanvasFolderCard({ project, projectName, onClick, onPrefetch, opening = false }: CanvasFolderCardProps) {
     const renameProject = useCanvasStore((state) => state.renameProject);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const editingId = useCanvasUiStore((state) => state.editingProjectId);
@@ -42,10 +44,11 @@ export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolder
     };
 
     return (
-        <article className={cn("canvas-folder-card", selected && "is-selected", editing && "is-editing")}>
-            <div className="canvas-folder-open" role="button" tabIndex={0} aria-label={`打开画布 ${project.title}`} onClick={() => !editing && onClick()} onKeyDown={handleOpenKeyDown}>
+        <article className={cn("canvas-folder-card", selected && "is-selected", editing && "is-editing", opening && "is-opening")} onPointerEnter={onPrefetch} onPointerDown={onPrefetch} onFocusCapture={onPrefetch}>
+            <div className="canvas-folder-open" role="button" tabIndex={0} aria-label={`打开画布 ${project.title}`} aria-busy={opening} onClick={() => !editing && !opening && onClick()} onKeyDown={handleOpenKeyDown}>
                 <div className="canvas-folder-preview" aria-hidden="true">
                     <ProjectPreview project={project} preferLatestImage />
+                    {opening ? <div className="canvas-folder-opening"><LoaderCircle className="size-5 animate-spin" /><span>正在打开</span></div> : null}
                 </div>
                 <div className="canvas-folder-body">
                     <div className="canvas-folder-heading-row">
@@ -109,7 +112,7 @@ export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolder
                     menu={{
                         onClick: ({ domEvent }) => domEvent.stopPropagation(),
                         items: [
-                            { key: "export", icon: <Download className="size-3.5" />, label: "导出画布", onClick: () => void exportCanvasProjects([project], project.title || "影策画布") },
+                            { key: "export", icon: <Download className="size-3.5" />, label: "导出画布", onClick: () => void exportCanvasProjects([project], project.title || "画布") },
                             { type: "divider" },
                             { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: () => setDeleteIds([project.id]) },
                         ],
