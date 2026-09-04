@@ -10,6 +10,16 @@ export type SharedSeriesTreeEntry<T extends SharedSeriesTreeItem> = {
     path: string;
 };
 
+export type SharedSeriesTreeNode<T extends SharedSeriesTreeItem> = {
+    item: T;
+    key: string;
+    value: string;
+    title: string;
+    label: string;
+    searchText: string;
+    children?: SharedSeriesTreeNode<T>[];
+};
+
 export function flattenSharedSeriesTree<T extends SharedSeriesTreeItem>(items: readonly T[]): SharedSeriesTreeEntry<T>[] {
     const byParent = new Map<string, T[]>();
     for (const item of items) {
@@ -60,4 +70,41 @@ export function sharedSeriesPath(items: readonly SharedSeriesTreeItem[], seriesI
         cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
     }
     return reversed.reverse();
+}
+
+export function buildSharedSeriesTree<T extends SharedSeriesTreeItem>(items: readonly T[], allowedIds?: ReadonlySet<string>): SharedSeriesTreeNode<T>[] {
+    const visible = allowedIds ? items.filter((item) => allowedIds.has(item.id)) : [...items];
+    const visibleById = new Map(visible.map((item) => [item.id, item]));
+    const pathById = new Map(flattenSharedSeriesTree(items).map(({ item, path }) => [item.id, path]));
+    const childrenByParent = new Map<string, T[]>();
+
+    for (const item of visible) {
+        const parentId = item.parentId?.trim() || "";
+        const safeParentId = parentId !== item.id && visibleById.has(parentId) ? parentId : "";
+        childrenByParent.set(safeParentId, [...(childrenByParent.get(safeParentId) || []), item]);
+    }
+
+    const visited = new Set<string>();
+    const visit = (item: T): SharedSeriesTreeNode<T> | null => {
+        if (visited.has(item.id)) return null;
+        visited.add(item.id);
+        const children = (childrenByParent.get(item.id) || []).map(visit).filter((child): child is SharedSeriesTreeNode<T> => Boolean(child));
+        const path = pathById.get(item.id) || item.name;
+        return {
+            item,
+            key: item.id,
+            value: item.id,
+            title: item.name,
+            label: path,
+            searchText: `${path} ${item.id}`.toLowerCase(),
+            ...(children.length ? { children } : {}),
+        };
+    };
+
+    const roots = (childrenByParent.get("") || []).map(visit).filter((node): node is SharedSeriesTreeNode<T> => Boolean(node));
+    for (const item of visible) {
+        const node = visit(item);
+        if (node) roots.push(node);
+    }
+    return roots;
 }

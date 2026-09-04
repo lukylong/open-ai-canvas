@@ -1,8 +1,8 @@
-import { AudioLines, Box, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FolderOpen, Image as ImageIcon, Layers3, Link2, MoreHorizontal, PencilLine, Play, Plus, RefreshCw, Search, Share2, Trash2, Upload, type LucideIcon } from "lucide-react";
+import { AudioLines, Box, CheckCheck, CircleHelp, Clapperboard, Copy, Download, FileText, FileUp, FolderInput, FolderOpen, Image as ImageIcon, Layers3, Link2, MoreHorizontal, PencilLine, Play, Plus, RefreshCw, Search, Share2, Trash2, Upload, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { App, Button, Drawer, Dropdown, Form, Input, Modal, Progress, Segmented, Select, Space, Table, Tag, Typography } from "antd";
-import type { MenuProps } from "antd";
+import { App, Button, Drawer, Dropdown, Form, Input, Modal, Popover, Progress, Segmented, Select, Space, Table, Tag, TreeSelect, Typography } from "antd";
+import type { MenuProps, TreeSelectProps } from "antd";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@/components/layout/workspace-page";
@@ -17,7 +17,7 @@ import { ASSET_CATEGORY_OPTIONS, assetCategoryLabel } from "@/lib/asset-category
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
 import { groupAssetSeries, type AssetSeries } from "@/lib/asset-series";
 import { formatBytes, readFileAsDataUrl, readImageMeta } from "@/lib/image-utils";
-import { flattenSharedSeriesTree, sharedSeriesDescendantIds, sharedSeriesPath } from "@/lib/shared-series-tree";
+import { buildSharedSeriesTree, flattenSharedSeriesTree, sharedSeriesDescendantIds, sharedSeriesPath, type SharedSeriesTreeNode } from "@/lib/shared-series-tree";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { useAssetStore, type Asset, type AssetCategory, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
@@ -866,8 +866,9 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
     const seriesTree = useMemo(() => flattenSharedSeriesTree(series), [series]);
     const grouped = useMemo(() => seriesTree.map(({ item, depth, path }) => ({ series: item, depth, path, assets: assets.filter((asset) => asset.seriesId === item.id) })), [assets, seriesTree]);
     const manageableSeries = useMemo(() => series.filter((item) => currentUser?.role === "admin" || item.ownerUserId === currentUser?.id), [currentUser, series]);
-    const manageableSeriesOptions = useMemo(() => seriesTree.filter(({ item }) => manageableSeries.some((candidate) => candidate.id === item.id)).map(({ item, path }) => ({ label: path, value: item.id })), [manageableSeries, seriesTree]);
-    const ownedSeriesOptions = useMemo(() => seriesTree.filter(({ item }) => item.ownerUserId === currentUser?.id).map(({ item, path }) => ({ label: path, value: item.id })), [currentUser, seriesTree]);
+    const seriesTreeData = useMemo(() => buildSharedSeriesTree(series), [series]);
+    const manageableSeriesTreeData = useMemo(() => buildSharedSeriesTree(series, new Set(manageableSeries.map((item) => item.id))), [manageableSeries, series]);
+    const ownedSeriesTreeData = useMemo(() => buildSharedSeriesTree(series, new Set(series.filter((item) => item.ownerUserId === currentUser?.id).map((item) => item.id))), [currentUser, series]);
     const selectedSeries = useMemo(() => selectedSeriesId === "all" ? null : series.find((item) => item.id === selectedSeriesId) || null, [selectedSeriesId, series]);
     const selectedPath = useMemo(() => selectedSeries ? sharedSeriesPath(series, selectedSeries.id) : [], [selectedSeries, series]);
     const selectedSharedAssets = useMemo(() => {
@@ -891,9 +892,11 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
         if (!editingSeries) return [];
         const excluded = sharedSeriesDescendantIds(series, editingSeries.id);
         excluded.add(editingSeries.id);
-        return seriesTree.filter(({ item }) => item.ownerUserId === editingSeries.ownerUserId && !excluded.has(item.id)).map(({ item, path }) => ({ label: path, value: item.id }));
-    }, [editingSeries, series, seriesTree]);
+        const allowed = new Set(series.filter((item) => item.ownerUserId === editingSeries.ownerUserId && !excluded.has(item.id)).map((item) => item.id));
+        return buildSharedSeriesTree(series, allowed);
+    }, [editingSeries, series]);
     const selectedOwnedSeriesId = selectedSeries && selectedSeries.ownerUserId === currentUser?.id ? selectedSeries.id : "";
+    const uploadPolicySummary = policy ? `JPG / PNG / WebP · 单张 ≤ ${formatBytes(policy.singleMaxBytes)} · 批量 ≤ ${policy.batchMaxFiles} 张 · ZIP ≤ ${formatBytes(policy.zipMaxBytes)}` : "正在读取上传说明";
 
     const analysis = useMemo(() => {
         if (!policy) return { total: pendingFiles.length, valid: 0, duplicate: 0, unsupported: 0, oversized: 0, totalBytes: 0, batchExceeded: false };
@@ -997,10 +1000,9 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
                         <Button type="primary" icon={<Upload className="size-4" />} onClick={() => { setUploadMode("files"); if (selectedSeries && manageableSeries.some((item) => item.id === selectedSeries.id)) setUploadSeriesId(selectedSeries.id); setZIPSeriesParentId(selectedOwnedSeriesId); setPendingFiles([]); setZIPSeriesName(""); setProgress(null); setUploadOpen(true); }}>批量上传</Button>
                         <Button loading={loading} icon={<RefreshCw className="size-4" />} onClick={() => void load()}>刷新</Button>
                     </div></div>} />
-                {policy ? <div className="mx-6 mb-4 rounded-lg border border-border bg-muted/35 px-4 py-3 text-sm text-foreground/65"><strong className="text-foreground">上传限制：</strong>{policy.description} 上传使用持久化批次；ZIP 解压由后台异步执行，页面关闭后任务仍会继续。</div> : null}
                 <ListToolbar className="library-toolbar" active={Boolean(keyword || selectedSeriesId !== "all")} onReset={() => { setKeyword(""); setSelectedSeriesId("all"); }}>
                     <Input allowClear className="w-full sm:w-80" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索分类、素材或分类 ID" onChange={(event) => setKeyword(event.target.value)} />
-                    <Select className="w-72" value={selectedSeriesId} onChange={setSelectedSeriesId} options={[{ label: "全部分类", value: "all" }, ...seriesTree.map(({ item, path }) => ({ label: path, value: item.id }))]} />
+                    <SharedSeriesTreeSelect className="w-72" value={selectedSeriesId} onChange={setSelectedSeriesId} treeData={seriesTreeData} rootOption={{ value: "all", label: "全部分类" }} placeholder="搜索或选择分类" />
                 </ListToolbar>
             </div>
             <div className="canvas-library-frame assets-library-frame">
@@ -1008,7 +1010,7 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
                     {selectedSeries ? <div className="mb-4 flex flex-wrap items-center gap-1 rounded-lg border border-border bg-background px-3 py-2 text-sm"><Button type="text" size="small" onClick={() => setSelectedSeriesId("all")}>全部分类</Button>{selectedPath.map((item) => <span key={item.id} className="contents"><span className="text-foreground/30">/</span><Button type="text" size="small" onClick={() => setSelectedSeriesId(item.id)}>{item.name}</Button></span>)}</div> : null}
                     {visibleGroups.length ? <>
                         <div className="mb-3 flex items-center justify-between"><strong className="text-sm">{keyword ? "匹配的分类" : selectedSeries ? "子分类" : "一级分类"}</strong><span className="text-xs text-foreground/45">最多支持 8 级分类</span></div>
-                        <CollectionGrid className="library-grid assets-library-grid">
+                        <CollectionGrid className="library-grid assets-library-grid shared-series-grid">
                             {visibleGroups.map((group) => {
                                 const descendantIds = sharedSeriesDescendantIds(series, group.series.id);
                                 const categoryIds = new Set([group.series.id, ...descendantIds]);
@@ -1018,10 +1020,10 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
                                 const manageable = currentUser?.role === "admin" || group.series.ownerUserId === currentUser?.id;
                                 const canCreateChild = group.series.ownerUserId === currentUser?.id;
                                 return <AssetSeriesCardLayout key={group.series.id}
-                                    cover={<button type="button" className="assets-cover" onClick={() => setSelectedSeriesId(group.series.id)}>{cover ? <img src={`/api/shared-library/assets/${encodeURIComponent(cover.id)}/thumbnail`} alt={group.series.name} loading="lazy" className="h-full w-full object-cover" /> : <span className="assets-cover-fallback"><FolderOpen /></span>}</button>}
+                                    cover={<AssetLibraryCardMedia className="assets-cover"><button type="button" className="shared-series-card-cover" onClick={() => setSelectedSeriesId(group.series.id)}>{cover ? <img src={`/api/shared-library/assets/${encodeURIComponent(cover.id)}/thumbnail`} alt={group.series.name} loading="lazy" className="h-full w-full object-cover" /> : <span className="assets-cover-fallback"><FolderOpen /></span>}</button></AssetLibraryCardMedia>}
                                     title={group.series.name} updatedLabel={formatAssetTime(group.series.updatedAt)} summary={`${categoryAssets.length} 个素材 · ${childCount} 个子分类`}
                                     typeLabel={`${group.depth + 1} 级分类`} seriesId={group.series.id} onOpen={() => setSelectedSeriesId(group.series.id)}
-                                    actions={<><button type="button" onClick={() => setSelectedSeriesId(group.series.id)}><FolderOpen />进入分类</button>{manageable ? <Dropdown menu={{ items: [...(canCreateChild ? [{ key: "child", label: "新建子分类", icon: <Plus className="size-3.5" /> }] : []), { key: "upload", label: "上传素材", icon: <Upload className="size-3.5" /> }, { key: "edit", label: "重命名 / 移动", icon: <PencilLine className="size-3.5" /> }, { key: "delete", label: "归档分类", danger: true, icon: <Trash2 className="size-3.5" /> }], onClick: ({ key }) => { if (key === "child") openCreateSeries(group.series.id); else if (key === "upload") { setUploadSeriesId(group.series.id); setUploadMode("files"); setPendingFiles([]); setProgress(null); setUploadOpen(true); } else if (key === "edit") openEditSeries(group.series); else void removeSeries(group.series); } }}><button type="button">管理</button></Dropdown> : null}</>} />;
+                                    actions={<><button type="button" onClick={() => setSelectedSeriesId(group.series.id)}><FolderOpen />进入</button>{manageable ? <button type="button" onClick={() => openEditSeries(group.series)}><FolderInput />移动</button> : null}{manageable ? <Dropdown menu={{ items: [...(canCreateChild ? [{ key: "child", label: "新建子分类", icon: <Plus className="size-3.5" /> }] : []), { key: "upload", label: "上传素材", icon: <Upload className="size-3.5" /> }, { key: "edit", label: "重命名 / 移动", icon: <PencilLine className="size-3.5" /> }, { key: "delete", label: "归档分类", danger: true, icon: <Trash2 className="size-3.5" /> }], onClick: ({ key }) => { if (key === "child") openCreateSeries(group.series.id); else if (key === "upload") { setUploadSeriesId(group.series.id); setUploadMode("files"); setPendingFiles([]); setProgress(null); setUploadOpen(true); } else if (key === "edit") openEditSeries(group.series); else void removeSeries(group.series); } }}><button type="button" aria-label={`更多分类操作：${group.series.name}`}><MoreHorizontal />更多</button></Dropdown> : null}</>} />;
                             })}
                         </CollectionGrid>
                     </> : null}
@@ -1040,8 +1042,10 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
         </WorkspacePage>
         <Modal title="上传共享素材" open={uploadOpen} onCancel={() => { if (!working) { setUploadOpen(false); setPendingFiles([]); setProgress(null); } }} onOk={() => void runUpload()} okText="开始上传" confirmLoading={working} okButtonProps={{ disabled: !analysis.valid || analysis.duplicate > 0 || analysis.unsupported > 0 || analysis.oversized > 0 || analysis.batchExceeded }} destroyOnHidden>
             <Segmented block value={uploadMode} options={[{ label: "单张 / 批量图片", value: "files" }, { label: "ZIP 系列包", value: "zip" }]} onChange={(value) => { setUploadMode(value as "files" | "zip"); setPendingFiles([]); }} />
-            <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-xs leading-6 text-foreground/65">{policy?.description || "正在读取上传策略…"}<br />普通批量默认 4 路并发（最高 6）；ZIP 仅在浏览器读取中央目录，完整解压由后台 Worker 流式执行。</div>
-            {uploadMode === "files" ? <Select className="mt-4 w-full" value={uploadSeriesId || undefined} placeholder="选择上传分类" options={manageableSeriesOptions} onChange={setUploadSeriesId} /> : <div className="mt-4 grid gap-3"><Select className="w-full" value={zipSeriesParentId} options={[{ label: "作为一级分类", value: "" }, ...ownedSeriesOptions]} onChange={setZIPSeriesParentId} /><Input value={zipSeriesName} placeholder="新分类名称（留空则使用 ZIP 文件名）" onChange={(event) => setZIPSeriesName(event.target.value)} /></div>}
+            <Popover trigger={["hover", "click"]} placement="bottomLeft" content={<div className="shared-upload-policy-detail"><strong>完整上传说明</strong><p>{policy?.description || "正在读取上传策略…"}</p><p>普通批量默认 4 路并发（最高 6）；ZIP 仅在浏览器读取中央目录，完整解压由后台 Worker 流式执行。上传任务已持久化，关闭页面后仍会继续。</p></div>}>
+                <button type="button" className="shared-upload-policy-summary" aria-label="查看完整上传说明"><CircleHelp /><span><strong>上传说明</strong><small>{uploadPolicySummary}</small></span><span className="shared-upload-policy-more">查看全部</span></button>
+            </Popover>
+            {uploadMode === "files" ? <SharedSeriesTreeSelect className="mt-3 w-full" value={uploadSeriesId} placeholder="搜索或选择上传分类" treeData={manageableSeriesTreeData} onChange={setUploadSeriesId} /> : <div className="mt-3 grid gap-3"><SharedSeriesTreeSelect className="w-full" value={zipSeriesParentId} treeData={ownedSeriesTreeData} rootOption={{ value: "", label: "作为一级分类" }} placeholder="搜索或选择上级分类" onChange={setZIPSeriesParentId} /><Input value={zipSeriesName} placeholder="新分类名称（留空则使用 ZIP 文件名）" onChange={(event) => setZIPSeriesName(event.target.value)} /></div>}
             <input ref={filesInputRef} hidden type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={(event) => { setPendingFiles(Array.from(event.target.files || [])); event.currentTarget.value = ""; }} />
             <input ref={zipInputRef} hidden type="file" accept=".zip,application/zip" onChange={(event) => { setPendingFiles(Array.from(event.target.files || []).slice(0, 1)); event.currentTarget.value = ""; }} />
             <Button className="mt-4 w-full" size="large" icon={<FileUp />} onClick={() => (uploadMode === "files" ? filesInputRef : zipInputRef).current?.click()}>{pendingFiles.length ? "重新选择文件" : "选择文件"}</Button>
@@ -1049,9 +1053,36 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
             {pendingFiles.length > 0 && analysis.batchExceeded ? <p className="mt-2 text-xs text-red-600">所选文件数量或合计大小超过当前上传策略，请减少后重试。</p> : null}
             {progress ? <div className="mt-4"><Progress percent={Math.round(100 * progress.completed / Math.max(1, progress.total))} /><p className="truncate text-xs text-foreground/55">{progress.phase} · {progress.fileName}</p></div> : null}
         </Modal>
-        <Modal title="新建共享分类" open={seriesModalOpen} onCancel={() => setSeriesModalOpen(false)} onOk={() => void createSeries()} confirmLoading={working} okButtonProps={{ disabled: !newSeriesName.trim() }}><div className="grid gap-3"><Input value={newSeriesName} maxLength={80} placeholder="输入分类名称" onChange={(event) => setNewSeriesName(event.target.value)} /><Select value={newSeriesParentId} options={[{ label: "作为一级分类", value: "" }, ...ownedSeriesOptions]} onChange={setNewSeriesParentId} /><Typography.Text type="secondary">可自由创建子分类，最多支持 8 级；旧共享系列会自动保留为一级分类。</Typography.Text></div></Modal>
-        <Modal title="编辑共享分类" open={Boolean(editingSeries)} onCancel={() => setEditingSeries(null)} onOk={() => void saveSeries()} confirmLoading={working} okButtonProps={{ disabled: !editingSeriesName.trim() }}><div className="grid gap-3"><Input value={editingSeriesName} maxLength={80} placeholder="输入分类名称" onChange={(event) => setEditingSeriesName(event.target.value)} /><Select value={editingSeriesParentId} options={[{ label: "移动到一级分类", value: "" }, ...editingParentOptions]} onChange={setEditingSeriesParentId} /><Typography.Text type="secondary">移动时不能选择当前分类或其子分类；同一分类树由同一创建者管理。</Typography.Text></div></Modal>
+        <Modal title="新建共享分类" open={seriesModalOpen} onCancel={() => setSeriesModalOpen(false)} onOk={() => void createSeries()} confirmLoading={working} okButtonProps={{ disabled: !newSeriesName.trim() }}><div className="grid gap-3"><label className="shared-series-form-field"><span>分类名称</span><Input value={newSeriesName} maxLength={80} placeholder="输入分类名称" onChange={(event) => setNewSeriesName(event.target.value)} /></label><label className="shared-series-form-field"><span>上级分类</span><SharedSeriesTreeSelect value={newSeriesParentId} treeData={ownedSeriesTreeData} rootOption={{ value: "", label: "作为一级分类" }} placeholder="搜索或选择上级分类" onChange={setNewSeriesParentId} /></label><Typography.Text type="secondary">可自由创建子分类，最多支持 8 级；旧共享系列会自动保留为一级分类。</Typography.Text></div></Modal>
+        <Modal title="重命名或移动分类" open={Boolean(editingSeries)} onCancel={() => setEditingSeries(null)} onOk={() => void saveSeries()} okText="保存修改" confirmLoading={working} okButtonProps={{ disabled: !editingSeriesName.trim() }}><div className="grid gap-3"><label className="shared-series-form-field"><span>分类名称</span><Input value={editingSeriesName} maxLength={80} placeholder="输入分类名称" onChange={(event) => setEditingSeriesName(event.target.value)} /></label><label className="shared-series-form-field"><span>移动到</span><SharedSeriesTreeSelect value={editingSeriesParentId} treeData={editingParentOptions} rootOption={{ value: "", label: "移动到一级分类" }} placeholder="搜索或选择目标分类" onChange={setEditingSeriesParentId} /></label><Typography.Text type="secondary">已有系列可以直接移动到其他分类；不能选择当前分类或其子分类。</Typography.Text></div></Modal>
     </>;
+}
+
+const SHARED_SERIES_ROOT_OPTION = "__shared_series_root_option__";
+
+function SharedSeriesTreeSelect({ className, value, treeData, rootOption, placeholder, onChange }: {
+    className?: string;
+    value: string;
+    treeData: SharedSeriesTreeNode<SharedAssetSeries>[];
+    rootOption?: { value: string; label: string };
+    placeholder: string;
+    onChange: (value: string) => void;
+}) {
+    const data = rootOption ? [{ key: SHARED_SERIES_ROOT_OPTION, value: SHARED_SERIES_ROOT_OPTION, title: rootOption.label, label: rootOption.label, searchText: rootOption.label.toLowerCase() }, ...treeData] : treeData;
+    const selectedValue = rootOption && value === rootOption.value ? SHARED_SERIES_ROOT_OPTION : value || undefined;
+    return <TreeSelect
+        className={className}
+        value={selectedValue}
+        treeData={data as TreeSelectProps["treeData"]}
+        treeDefaultExpandAll
+        treeLine={{ showLeafIcon: false }}
+        showSearch
+        virtual={false}
+        placeholder={placeholder}
+        treeNodeLabelProp="label"
+        filterTreeNode={(input, node) => String(node.searchText || node.label || node.title || "").toLowerCase().includes(input.trim().toLowerCase())}
+        onChange={(next) => onChange(next === SHARED_SERIES_ROOT_OPTION ? rootOption?.value || "" : String(next || ""))}
+    />;
 }
 
 function AssetSeriesCard({ series, selectedIds, onSelect, onOpen, onPublish, onExport }: { series: AssetSeries<LibraryAsset>; selectedIds: string[]; onSelect: (selected: boolean) => void; onOpen: () => void; onPublish: () => void; onExport: () => void }) {

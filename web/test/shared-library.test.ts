@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { zipSync } from "fflate";
 
 import { AssetSeriesCardLayout } from "@/components/assets/asset-series-card";
-import { flattenSharedSeriesTree, sharedSeriesDescendantIds, sharedSeriesPath } from "@/lib/shared-series-tree";
+import { buildSharedSeriesTree, flattenSharedSeriesTree, sharedSeriesDescendantIds, sharedSeriesPath } from "@/lib/shared-series-tree";
 import { inspectZIPCentralDirectory, validateSharedFiles, type SharedUploadPolicy } from "@/services/api/shared-library";
 
 const policy: SharedUploadPolicy = {
@@ -73,6 +73,16 @@ describe("shared series hierarchy", () => {
     test("returns descendants and breadcrumb path for move validation and navigation", () => {
         expect([...sharedSeriesDescendantIds(series, "root")]).toEqual(["season", "key-visual"]);
         expect(sharedSeriesPath(series, "key-visual").map((item) => item.name)).toEqual(["品牌", "春季", "主视觉"]);
+    });
+
+    test("builds nested searchable nodes for category selectors and existing-series moves", () => {
+        const tree = buildSharedSeriesTree(series);
+        expect(tree.map((node) => ({ id: node.item.id, label: node.label, children: node.children?.map((child) => child.item.id) || [] }))).toEqual([
+            { id: "root", label: "品牌", children: ["season"] },
+            { id: "other", label: "其他", children: [] },
+        ]);
+        expect(tree[0].children?.[0].children?.[0]).toMatchObject({ value: "key-visual", label: "品牌 / 春季 / 主视觉" });
+        expect(buildSharedSeriesTree(series, new Set(["other", "key-visual"])).map((node) => node.item.id)).toEqual(["key-visual", "other"]);
     });
 
     test("keeps orphaned or cyclic legacy rows visible without recursing forever", () => {
