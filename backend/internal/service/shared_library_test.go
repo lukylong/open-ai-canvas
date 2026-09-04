@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func TestSharedUploadBoundaryAndIdempotentComplete(t *testing.T) {
 	if err := db.Create(&member).Error; err != nil {
 		t.Fatal(err)
 	}
-	series, err := svc.CreateSharedAssetSeries(&member, "测试系列")
+	series, err := svc.CreateSharedAssetSeries(&member, "测试系列", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestSharedSeriesOwnershipAndZIPEntrySecurity(t *testing.T) {
 	if err := db.Create(&[]model.User{owner, other}).Error; err != nil {
 		t.Fatal(err)
 	}
-	series, err := svc.CreateSharedAssetSeries(&owner, "owner series")
+	series, err := svc.CreateSharedAssetSeries(&owner, "owner series", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +199,78 @@ func TestSharedSeriesOwnershipAndZIPEntrySecurity(t *testing.T) {
 		if err := validateSharedZIPEntry(entry); err == nil {
 			t.Fatalf("unsafe ZIP entry accepted: %#v", entry.FileHeader)
 		}
+	}
+}
+
+func TestSharedSeriesHierarchyValidationAndZIPParent(t *testing.T) {
+	svc, db := newSharedLibraryTestService(t)
+	if err := enableSharedLibraryFeature(db); err != nil {
+		t.Fatal(err)
+	}
+	owner := model.User{ID: "hierarchy-owner", Username: "hierarchy-owner", Role: model.UserRoleUser, Status: model.UserStatusActive, SharedLibraryEnabled: true}
+	other := model.User{ID: "hierarchy-other", Username: "hierarchy-other", Role: model.UserRoleUser, Status: model.UserStatusActive, SharedLibraryEnabled: true}
+	if err := db.Create(&[]model.User{owner, other}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := svc.CreateSharedAssetSeries(&owner, "品牌", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := svc.CreateSharedAssetSeries(&owner, "春季", root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := svc.CreateSharedAssetSeries(&owner, "主视觉", child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentID != root.ID || leaf.ParentID != child.ID {
+		t.Fatalf("hierarchy not persisted: root=%#v child=%#v leaf=%#v", root, child, leaf)
+	}
+	if _, err := svc.CreateSharedAssetSeries(&other, "越权子分类", root.ID); err == nil {
+		t.Fatal("another owner created a child in the owner's hierarchy")
+	}
+	if _, err := svc.UpdateSharedAssetSeries(&owner, root.ID, root.Name, &leaf.ID); err == nil {
+		t.Fatal("cycle move was accepted")
+	}
+	if err := svc.DeleteSharedAssetSeries(&owner, root.ID); err == nil {
+		t.Fatal("parent with active children was archived")
+	} else {
+		var appErr *AppError
+		if !errors.As(err, &appErr) || appErr.Status != http.StatusConflict {
+			t.Fatalf("archive conflict = %v", err)
+		}
+	}
+
+	detail, err := svc.CreateSharedUploadBatch(&owner, CreateSharedUploadBatchRequest{
+		Mode: "zip", SeriesName: "ZIP 子分类", SeriesParentID: child.ID,
+		Files: []SharedUploadManifestItem{{ClientID: "nested-zip", FileName: "nested.zip", MimeType: "application/zip", Size: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Series == nil || detail.Series.ParentID != child.ID {
+		t.Fatalf("ZIP hierarchy = %#v", detail.Series)
+	}
+
+	depthParent := ""
+	depthRoot := ""
+	for depth := 1; depth <= sharedSeriesMaxDepth; depth++ {
+		row, createErr := svc.CreateSharedAssetSeries(&owner, fmt.Sprintf("层级 %d", depth), depthParent)
+		if createErr != nil {
+			t.Fatalf("depth %d rejected: %v", depth, createErr)
+		}
+		if depth == 1 {
+			depthRoot = row.ID
+		}
+		depthParent = row.ID
+	}
+	if _, err := svc.CreateSharedAssetSeries(&owner, "第九级", depthParent); err == nil {
+		t.Fatal("ninth hierarchy level was accepted")
+	}
+	if _, err := svc.UpdateSharedAssetSeries(&owner, depthRoot, "层级 1", &root.ID); err == nil {
+		t.Fatal("subtree move exceeding the depth limit was accepted")
 	}
 }
 

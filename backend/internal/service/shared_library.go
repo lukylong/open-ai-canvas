@@ -35,6 +35,7 @@ const (
 	sharedZIPMaxRatio    int64 = 100
 	sharedUploadURLTTL         = 15 * time.Minute
 	sharedUploadLease          = 2 * time.Minute
+	sharedSeriesMaxDepth       = 8
 )
 
 type SharedUploadPolicy struct {
@@ -67,6 +68,7 @@ type CreateSharedUploadBatchRequest struct {
 	Mode             string                     `json:"mode"`
 	SeriesID         string                     `json:"seriesId"`
 	SeriesName       string                     `json:"seriesName"`
+	SeriesParentID   string                     `json:"seriesParentId"`
 	Files            []SharedUploadManifestItem `json:"files"`
 	ZIPEntryCount    int                        `json:"zipEntryCount"`
 	ZIPDeclaredBytes int64                      `json:"zipDeclaredBytes"`
@@ -140,23 +142,27 @@ func (s *Service) SharedAssetSeriesList(user *model.User) ([]model.SharedAssetSe
 	return s.repo.SharedAssetSeriesList()
 }
 
-func (s *Service) CreateSharedAssetSeries(user *model.User, name string) (*model.SharedAssetSeries, error) {
+func (s *Service) CreateSharedAssetSeries(user *model.User, name string, parentID string) (*model.SharedAssetSeries, error) {
 	if err := s.RequireSharedLibraryAccess(user); err != nil {
 		return nil, err
 	}
-	name = strings.TrimSpace(name)
-	if name == "" || len([]rune(name)) > 80 {
-		return nil, BadAuthRequest("系列名称必须为 1-80 个字符")
+	name, err := normalizeSharedSeriesName(name)
+	if err != nil {
+		return nil, err
+	}
+	parentID = strings.TrimSpace(parentID)
+	if _, err := s.validateSharedSeriesParent(user.ID, "", parentID); err != nil {
+		return nil, err
 	}
 	now := time.Now()
-	row := &model.SharedAssetSeries{ID: newID(), Name: name, OwnerUserID: user.ID, Status: model.SharedAssetSeriesReady, CreatedAt: now, UpdatedAt: now}
+	row := &model.SharedAssetSeries{ID: newID(), Name: name, ParentID: parentID, OwnerUserID: user.ID, Status: model.SharedAssetSeriesReady, CreatedAt: now, UpdatedAt: now}
 	if err := s.repo.SaveSharedAssetSeries(row); err != nil {
 		return nil, err
 	}
 	return row, nil
 }
 
-func (s *Service) UpdateSharedAssetSeries(user *model.User, id string, name string) (*model.SharedAssetSeries, error) {
+func (s *Service) UpdateSharedAssetSeries(user *model.User, id string, name string, parentID *string) (*model.SharedAssetSeries, error) {
 	if err := s.RequireSharedLibraryAccess(user); err != nil {
 		return nil, err
 	}
@@ -167,9 +173,24 @@ func (s *Service) UpdateSharedAssetSeries(user *model.User, id string, name stri
 	if user.Role != model.UserRoleAdmin && row.OwnerUserID != user.ID {
 		return nil, Forbidden("只能管理自己创建的共享系列")
 	}
-	name = strings.TrimSpace(name)
-	if name == "" || len([]rune(name)) > 80 {
-		return nil, BadAuthRequest("系列名称必须为 1-80 个字符")
+	name, err = normalizeSharedSeriesName(name)
+	if err != nil {
+		return nil, err
+	}
+	if parentID != nil {
+		nextParentID := strings.TrimSpace(*parentID)
+		nextDepth, err := s.validateSharedSeriesParent(row.OwnerUserID, row.ID, nextParentID)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.repo.SharedAssetSeriesList()
+		if err != nil {
+			return nil, err
+		}
+		if nextDepth+sharedSeriesSubtreeHeight(rows, row.ID)-1 > sharedSeriesMaxDepth {
+			return nil, BadAuthRequest("移动后共享素材分类将超过 8 级")
+		}
+		row.ParentID = nextParentID
 	}
 	row.Name, row.UpdatedAt = name, time.Now()
 	if err := s.repo.SaveSharedAssetSeries(row); err != nil {
@@ -189,8 +210,81 @@ func (s *Service) DeleteSharedAssetSeries(user *model.User, id string) error {
 	if user.Role != model.UserRoleAdmin && row.OwnerUserID != user.ID {
 		return Forbidden("只能管理自己创建的共享系列")
 	}
+	children, err := s.repo.SharedAssetSeriesChildren(row.ID)
+	if err != nil {
+		return err
+	}
+	if len(children) > 0 {
+		return NewAppError(http.StatusConflict, "该分类仍有子分类，请先移动或归档子分类")
+	}
 	row.Status, row.UpdatedAt = model.SharedAssetSeriesArchived, time.Now()
 	return s.repo.SaveSharedAssetSeries(row)
+}
+
+func normalizeSharedSeriesName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len([]rune(name)) > 80 {
+		return "", BadAuthRequest("分类名称必须为 1-80 个字符")
+	}
+	return name, nil
+}
+
+func (s *Service) validateSharedSeriesParent(ownerUserID string, seriesID string, parentID string) (int, error) {
+	parentID = strings.TrimSpace(parentID)
+	if parentID == "" {
+		return 1, nil
+	}
+	seen := make(map[string]struct{}, sharedSeriesMaxDepth)
+	cursor := parentID
+	resultDepth := 1
+	for depth := 2; cursor != ""; depth++ {
+		if cursor == seriesID {
+			return 0, BadAuthRequest("上级分类不能选择当前分类或其子分类")
+		}
+		if _, exists := seen[cursor]; exists {
+			return 0, BadAuthRequest("共享素材分类层级存在循环")
+		}
+		seen[cursor] = struct{}{}
+		if depth > sharedSeriesMaxDepth {
+			return 0, BadAuthRequest("共享素材分类最多支持 8 级")
+		}
+		parent, err := s.repo.SharedAssetSeries(cursor)
+		if err != nil || parent.Status != model.SharedAssetSeriesReady {
+			return 0, BadAuthRequest("请选择有效的上级分类")
+		}
+		if parent.OwnerUserID != ownerUserID {
+			return 0, Forbidden("上级分类必须与当前分类属于同一创建者")
+		}
+		resultDepth = depth
+		cursor = strings.TrimSpace(parent.ParentID)
+	}
+	return resultDepth, nil
+}
+
+func sharedSeriesSubtreeHeight(rows []model.SharedAssetSeries, rootID string) int {
+	children := make(map[string][]string)
+	for _, row := range rows {
+		children[row.ParentID] = append(children[row.ParentID], row.ID)
+	}
+	var visit func(string, map[string]bool) int
+	visit = func(id string, ancestors map[string]bool) int {
+		if ancestors[id] {
+			return sharedSeriesMaxDepth + 1
+		}
+		nextAncestors := make(map[string]bool, len(ancestors)+1)
+		for ancestor := range ancestors {
+			nextAncestors[ancestor] = true
+		}
+		nextAncestors[id] = true
+		height := 1
+		for _, childID := range children[id] {
+			if childHeight := 1 + visit(childID, nextAncestors); childHeight > height {
+				height = childHeight
+			}
+		}
+		return height
+	}
+	return visit(rootID, map[string]bool{})
 }
 
 func (s *Service) SharedAssets(user *model.User, seriesID string) ([]model.SharedAsset, error) {
@@ -232,8 +326,12 @@ func (s *Service) CreateSharedUploadBatch(user *model.User, req CreateSharedUplo
 		if name == "" || len([]rune(name)) > 80 {
 			return nil, BadAuthRequest("ZIP 系列名称必须为 1-80 个字符")
 		}
+		req.SeriesParentID = strings.TrimSpace(req.SeriesParentID)
+		if _, err := s.validateSharedSeriesParent(user.ID, "", req.SeriesParentID); err != nil {
+			return nil, err
+		}
 		now := time.Now()
-		series = &model.SharedAssetSeries{ID: newID(), Name: name, OwnerUserID: user.ID, Status: model.SharedAssetSeriesPreparing, CreatedAt: now, UpdatedAt: now}
+		series = &model.SharedAssetSeries{ID: newID(), Name: name, ParentID: req.SeriesParentID, OwnerUserID: user.ID, Status: model.SharedAssetSeriesPreparing, CreatedAt: now, UpdatedAt: now}
 		req.SeriesID = series.ID
 	} else {
 		owned, err := s.repo.SharedAssetSeries(req.SeriesID)

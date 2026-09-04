@@ -7,10 +7,11 @@ import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { AssetLibraryCard } from "@/components/assets/asset-library-card";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { PaginationBar } from "@/components/layout/workspace-page";
+import { flattenSharedSeriesTree } from "@/lib/shared-series-tree";
 import { cn } from "@/lib/utils";
 import type { ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
 import type { Asset } from "@/stores/use-asset-store";
-import { listSharedAssets, type AssetReference, type SharedAsset } from "@/services/api/shared-library";
+import { listSharedAssets, listSharedSeries, type AssetReference, type SharedAsset } from "@/services/api/shared-library";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type AssetLibraryPickerItem = {
@@ -111,6 +112,7 @@ export function AssetLibraryPickerModal({
     const [uploadingCount, setUploadingCount] = useState(0);
     const [error, setError] = useState("");
     const [sharedItems, setSharedItems] = useState<AssetLibraryPickerItem[]>([]);
+    const [sharedFolders, setSharedFolders] = useState<AssetLibraryPickerFolder[]>([]);
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const initialSelectedIdsRef = useRef(initialSelectedIds);
     const itemsRef = useRef(items);
@@ -128,7 +130,7 @@ export function AssetLibraryPickerModal({
         [categoryLabels, pluginItems],
     );
     const sourceItems = source === "plugin" ? pluginItems : source === "shared" ? sharedSourceItems : localItems;
-    const sourceFolders = source === "plugin" ? folders : [];
+    const sourceFolders = source === "plugin" ? folders : source === "shared" ? sharedFolders : [];
     const showCategories = source === "local" || !sourceFolders.length;
     const categories = useMemo(() => ["all", ...Array.from(new Set(sourceItems.map((item) => item.category || "other")))], [sourceItems]);
     const visibleItems = useMemo(() => {
@@ -160,14 +162,18 @@ export function AssetLibraryPickerModal({
     }, [initialCategory, initialFolderId, open]);
 
     useEffect(() => {
-        if (!open || !canUseShared) { setSharedItems([]); return; }
+        if (!open || !canUseShared) { setSharedItems([]); setSharedFolders([]); return; }
         let active = true;
-        void listSharedAssets().then(({ assets }) => {
+        void Promise.all([listSharedAssets(), listSharedSeries()]).then(([{ assets }, { series }]) => {
             if (!active) return;
+            const tree = flattenSharedSeriesTree(series);
+            const pathByID = new Map(tree.map((entry) => [entry.item.id, entry.path]));
+            setSharedFolders(series.map((item) => ({ id: item.id, parentId: item.parentId, name: item.name })));
             setSharedItems(assets.map((asset) => ({
                 id: `shared:${asset.id}`, title: asset.title, category: "image", kindLabel: "共享图片", shared: asset,
                 assetReference: { source: "shared", sharedAssetId: asset.id, version: asset.version },
-                imageUrl: `/api/shared-library/assets/${encodeURIComponent(asset.id)}/thumbnail`, description: "共享素材 · 使用时重新校验权限",
+                folderId: asset.seriesId, imageUrl: `/api/shared-library/assets/${encodeURIComponent(asset.id)}/thumbnail`,
+                description: `${pathByID.get(asset.seriesId) || "未分类"} · 使用时重新校验权限`, searchText: pathByID.get(asset.seriesId) || "",
             })));
         }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "读取共享素材失败"); });
         return () => { active = false; };
@@ -177,6 +183,11 @@ export function AssetLibraryPickerModal({
         if (category === "all" || categories.includes(category)) return;
         setCategory("all");
     }, [categories, category]);
+
+    useEffect(() => {
+        if (folderId === "all" || sourceFolders.some((folder) => folder.id === folderId)) return;
+        setFolderId("all");
+    }, [folderId, sourceFolders]);
 
     useEffect(() => {
         if ((hasPluginSource && source === "plugin") || (canUseShared && source === "shared") || source === "local") return;
@@ -261,7 +272,7 @@ export function AssetLibraryPickerModal({
         ...(canUseShared ? [{ key: "shared", icon: <Images aria-hidden="true" />, label: <span className="asset-picker-source-menu-label"><span>共享素材</span><em>{sharedSourceItems.length}</em></span> }] : []),
         ...(hasPluginSource ? [{ key: "plugin", icon: <Puzzle aria-hidden="true" />, label: <span className="asset-picker-source-menu-label"><span>插件来源</span><em>{pluginItems.length}</em></span> }] : []),
     ];
-    const activeUpload = source === "plugin" ? upload?.external : upload;
+    const activeUpload = source === "plugin" ? upload?.external : source === "local" ? upload : undefined;
     const uploading = uploadingCount > 0;
 
     return (
@@ -308,7 +319,7 @@ export function AssetLibraryPickerModal({
                 </header>
                 <div className="asset-picker-body">
                     <nav className="asset-picker-categories" aria-label="素材分类">
-                        {sourceFolders.length ? <><span className="asset-picker-nav-label">文件夹</span><button type="button" className={cn("assets-filter-item", folderId === "all" && "is-active")} aria-pressed={folderId === "all"} onClick={() => setFolderId("all")}><span className="assets-filter-item-label">全部文件夹</span><span className="assets-filter-count">{sourceItems.length}</span></button>{renderPickerFolders(sourceFolders, sourceItems, folderId, setFolderId)}</> : null}
+                        {sourceFolders.length ? <><span className="asset-picker-nav-label">{source === "shared" ? "共享分类" : "文件夹"}</span><button type="button" className={cn("assets-filter-item", folderId === "all" && "is-active")} aria-pressed={folderId === "all"} onClick={() => setFolderId("all")}><span className="assets-filter-item-label">{source === "shared" ? "全部分类" : "全部文件夹"}</span><span className="assets-filter-count">{sourceItems.length}</span></button>{renderPickerFolders(sourceFolders, sourceItems, folderId, setFolderId)}</> : null}
                         {showCategories ? <><span className="asset-picker-nav-label">分类</span>{categories.map((value) => (
                             <button key={value} type="button" className={cn("assets-filter-item", category === value && "is-active")} aria-pressed={category === value} onClick={() => setCategory(value)}>
                                 <span className="assets-filter-item-label">{categoryLabels[value] || "其他"}</span><span className="assets-filter-count">{countFor(value)}</span>

@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 6
+const CurrentSchemaVersion int64 = 7
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -20,6 +20,7 @@ const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-
 const sharedAssetLibraryChecksum = "sha256:shared-asset-library-v4-20260902"
 const sharedAssetStorageScopeChecksum = "sha256:shared-asset-storage-scope-v5-20260903"
 const legacyZQAssetPayloadChecksum = "sha256:legacy-zq-asset-client-payload-v6-20260903"
+const sharedAssetSeriesHierarchyChecksum = "sha256:shared-asset-series-hierarchy-v7-20260904"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -52,6 +53,11 @@ var schemaMigrations = []migration{
 	{version: 4, name: "shared_asset_library", checksum: sharedAssetLibraryChecksum, apply: migrateSchemaV4},
 	{version: 5, name: "shared_asset_storage_scope", checksum: sharedAssetStorageScopeChecksum, apply: migrateSchemaV5},
 	{version: 6, name: "legacy_zq_asset_client_payload", checksum: legacyZQAssetPayloadChecksum, apply: migrateSchemaV6},
+	{version: 7, name: "shared_asset_series_hierarchy", checksum: sharedAssetSeriesHierarchyChecksum, apply: migrateSchemaV7},
+}
+
+func migrateSchemaV7(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.SharedAssetSeries{})
 }
 
 func migrateSchemaV6(tx *gorm.DB) error {

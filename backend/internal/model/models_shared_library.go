@@ -39,6 +39,7 @@ const (
 type SharedAssetSeries struct {
 	ID              string                  `json:"id" gorm:"primaryKey;size:36"`
 	Name            string                  `json:"name" gorm:"size:160"`
+	ParentID        string                  `json:"parentId,omitempty" gorm:"index;size:36"`
 	OwnerUserID     string                  `json:"ownerUserId" gorm:"index;size:36"`
 	CoverResourceID string                  `json:"coverResourceId,omitempty" gorm:"index;size:36"`
 	Status          SharedAssetSeriesStatus `json:"status" gorm:"index;size:24"`
