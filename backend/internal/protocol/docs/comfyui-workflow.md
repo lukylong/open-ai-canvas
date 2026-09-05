@@ -12,7 +12,7 @@
 
 渠道模型的上游模型标识对应 `workflow_key`，例如文生图、图生图、文生视频和图生视频可以分别指向不同的注册工作流。一个工作流由注册表中的 `key`、`revision`、能力、源 JSON 与字段映射组成；适配器按 revision 读取固定版本，不能在任务运行期间静默切换模板。工作流更新后应先在测试渠道验证节点、模型文件、输入映射和输出类型，再修改生产模型所引用的 key 或 revision。
 
-同一个 `comfyui-workflow` 协议同时支持图片和视频能力。能力由渠道模型和具体工作流清单共同约束，不能仅根据模型名称猜测。图片模型应只返回图片资源，视频模型应返回视频资源；工作流同时产生音频时，适配器会保留音频输出，但画布是否消费该资源仍由调用任务决定。Provider 由 `provider_id` 选择，默认值是 `default`，实际地址来自适配服务的 `COMFY_PROVIDERS_JSON` 或 `COMFY_URL`，不写入渠道模型正文。配置多个 Provider 并启用 `COMFY_AUTO_BALANCE` 时，`default` 请求会选择当前可达且 ComfyUI 队列最短的 Provider；显式指定其他 Provider ID 时仍固定路由到该节点。
+同一个 `comfyui-workflow` 协议同时支持图片和视频能力。能力由渠道模型和具体工作流清单共同约束，不能仅根据模型名称猜测。图片模型应只返回图片资源，视频模型应返回视频资源；工作流同时产生音频时，适配器会保留音频输出，但画布是否消费该资源仍由调用任务决定。Provider 由 `provider_id` 选择，默认值是 `default`，实际地址来自适配服务的 `COMFY_PROVIDERS_JSON` 或 `COMFY_URL`，不写入渠道模型正文。配置多个 Provider 并启用 `COMFY_AUTO_BALANCE` 时，`default` 请求会选择当前可达且 ComfyUI 队列最短的 Provider；适配器会把尚未完成提交的请求计入临时占用，避免并发请求同时选择同一条空队列。显式指定其他 Provider ID 时仍固定路由到该节点。生产渠道的并发上限应设置为可并行执行的 Provider 数量，避免后端把大量任务提前提交进 ComfyUI 的串行队列。
 
 ## 参数
 

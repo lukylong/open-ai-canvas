@@ -25,6 +25,7 @@ class ProviderSelectionTests(unittest.IsolatedAsyncioTestCase):
             clear=False,
         )
         self.environment.start()
+        app.provider_reservations.clear()
 
     def tearDown(self):
         self.environment.stop()
@@ -68,6 +69,19 @@ class ProviderSelectionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(selected)
         self.assertEqual(selected.id, "default")
+
+    async def test_inflight_reservation_breaks_a_concurrent_queue_tie(self):
+        with patch.object(app, "provider_queue_depth", new=AsyncMock(return_value=0)):
+            first = await app.reserve_provider("default")
+            second = await app.reserve_provider("default")
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual(first.id, "default")
+        self.assertEqual(second.id, "gpu3")
+        await app.release_provider(first)
+        await app.release_provider(second)
+        self.assertEqual(app.provider_reservations, {})
 
     async def test_history_timeout_is_reported_as_running(self):
         job_id = app.encode_job("default", "prompt-1")

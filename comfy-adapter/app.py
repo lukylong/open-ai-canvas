@@ -45,6 +45,8 @@ class JobRequest(BaseModel):
 
 
 app = FastAPI(title="Canvas ComfyUI Workflow Adapter", version="1.0.0")
+provider_selection_lock = asyncio.Lock()
+provider_reservations: dict[str, int] = {}
 
 
 def auto_balance_enabled() -> bool:
@@ -97,13 +99,30 @@ async def select_provider(requested_provider_id: str) -> Provider | None:
     candidates = list(configured.values())
     depths = await asyncio.gather(*(provider_queue_depth(provider) for provider in candidates))
     available = [
-        (depth, 0 if provider.id == requested_provider_id else 1, provider)
+        (depth + provider_reservations.get(provider.id, 0), 0 if provider.id == requested_provider_id else 1, provider)
         for provider, depth in zip(candidates, depths)
         if depth is not None
     ]
     if not available:
         return requested
     return min(available, key=lambda item: (item[0], item[1]))[2]
+
+
+async def reserve_provider(requested_provider_id: str) -> Provider | None:
+    async with provider_selection_lock:
+        provider = await select_provider(requested_provider_id)
+        if provider is not None:
+            provider_reservations[provider.id] = provider_reservations.get(provider.id, 0) + 1
+        return provider
+
+
+async def release_provider(provider: Provider) -> None:
+    async with provider_selection_lock:
+        remaining = provider_reservations.get(provider.id, 0) - 1
+        if remaining > 0:
+            provider_reservations[provider.id] = remaining
+        else:
+            provider_reservations.pop(provider.id, None)
 
 
 def input_host_allowlist() -> set[str]:
@@ -218,21 +237,24 @@ async def upload_image(client: httpx.AsyncClient, provider: Provider, value: str
 async def create_job(request: JobRequest) -> dict[str, Any]:
     registry = load_registry()
     spec = registry.get(request.workflow_key)
-    provider = await select_provider(request.provider_id)
     if spec is None:
         raise HTTPException(status_code=400, detail="workflow is not registered")
+    provider = await reserve_provider(request.provider_id)
     if provider is None:
         raise HTTPException(status_code=400, detail="provider is not configured")
-    client_id = f"canvas-{secrets.token_hex(8)}"
-    async with httpx.AsyncClient(timeout=60) as client:
-        uploaded = [await upload_image(client, provider, value, index) for index, value in enumerate(request.input_images, start=1)]
-        try:
-            workflow = compile_workflow(spec, request.model_dump(), uploaded, client_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        response = await client.post(f"{provider.base_url}/prompt", json={"prompt": workflow, "client_id": client_id}, headers=provider_headers(provider))
-        response.raise_for_status()
-        payload = response.json()
+    try:
+        client_id = f"canvas-{secrets.token_hex(8)}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            uploaded = [await upload_image(client, provider, value, index) for index, value in enumerate(request.input_images, start=1)]
+            try:
+                workflow = compile_workflow(spec, request.model_dump(), uploaded, client_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            response = await client.post(f"{provider.base_url}/prompt", json={"prompt": workflow, "client_id": client_id}, headers=provider_headers(provider))
+            response.raise_for_status()
+            payload = response.json()
+    finally:
+        await release_provider(provider)
     prompt_id = str(payload.get("prompt_id") or "").strip()
     if not prompt_id:
         raise HTTPException(status_code=502, detail="ComfyUI did not return prompt_id")
