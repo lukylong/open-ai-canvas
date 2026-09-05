@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { zipSync } from "fflate";
 
 import { AssetSeriesCardLayout } from "@/components/assets/asset-series-card";
+import { buildSharedSeriesTree, flattenSharedSeriesTree, sharedSeriesDescendantIds, sharedSeriesPath } from "@/lib/shared-series-tree";
 import { inspectZIPCentralDirectory, validateSharedFiles, type SharedUploadPolicy } from "@/services/api/shared-library";
 
 const policy: SharedUploadPolicy = {
@@ -49,5 +50,43 @@ describe("series card layout", () => {
         expect(html).toContain('class="asset-series-card-type">任务系列</span>');
         expect(html).toContain('class="asset-series-card-id">task_very_long_series_identifier_that_must_ellipsis</span>');
         expect(html).toContain("asset-series-card-actions");
+    });
+});
+
+describe("shared series hierarchy", () => {
+    const series = [
+        { id: "root", name: "品牌" },
+        { id: "season", name: "春季", parentId: "root" },
+        { id: "key-visual", name: "主视觉", parentId: "season" },
+        { id: "other", name: "其他" },
+    ];
+
+    test("flattens nested categories with depth and full paths", () => {
+        expect(flattenSharedSeriesTree(series).map(({ item, depth, path }) => ({ id: item.id, depth, path }))).toEqual([
+            { id: "root", depth: 0, path: "品牌" },
+            { id: "season", depth: 1, path: "品牌 / 春季" },
+            { id: "key-visual", depth: 2, path: "品牌 / 春季 / 主视觉" },
+            { id: "other", depth: 0, path: "其他" },
+        ]);
+    });
+
+    test("returns descendants and breadcrumb path for move validation and navigation", () => {
+        expect([...sharedSeriesDescendantIds(series, "root")]).toEqual(["season", "key-visual"]);
+        expect(sharedSeriesPath(series, "key-visual").map((item) => item.name)).toEqual(["品牌", "春季", "主视觉"]);
+    });
+
+    test("builds nested searchable nodes for category selectors and existing-series moves", () => {
+        const tree = buildSharedSeriesTree(series);
+        expect(tree.map((node) => ({ id: node.item.id, label: node.label, children: node.children?.map((child) => child.item.id) || [] }))).toEqual([
+            { id: "root", label: "品牌", children: ["season"] },
+            { id: "other", label: "其他", children: [] },
+        ]);
+        expect(tree[0].children?.[0].children?.[0]).toMatchObject({ value: "key-visual", label: "品牌 / 春季 / 主视觉" });
+        expect(buildSharedSeriesTree(series, new Set(["other", "key-visual"])).map((node) => node.item.id)).toEqual(["key-visual", "other"]);
+    });
+
+    test("keeps orphaned or cyclic legacy rows visible without recursing forever", () => {
+        const malformed = [{ id: "a", name: "A", parentId: "b" }, { id: "b", name: "B", parentId: "a" }, { id: "orphan", name: "Orphan", parentId: "missing" }];
+        expect(flattenSharedSeriesTree(malformed).map(({ item }) => item.id)).toEqual(["a", "b", "orphan"]);
     });
 });

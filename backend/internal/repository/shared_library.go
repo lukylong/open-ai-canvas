@@ -43,6 +43,12 @@ func (r *Repository) SaveSharedAssetSeries(row *model.SharedAssetSeries) error {
 	return r.db.Save(row).Error
 }
 
+func (r *Repository) SharedAssetSeriesChildren(parentID string) ([]model.SharedAssetSeries, error) {
+	var rows []model.SharedAssetSeries
+	err := r.db.Where("parent_id = ? AND status = ?", parentID, model.SharedAssetSeriesReady).Order("updated_at desc").Find(&rows).Error
+	return rows, err
+}
+
 func (r *Repository) SharedAssets(seriesID string) ([]model.SharedAsset, error) {
 	var rows []model.SharedAsset
 	query := r.db.Where("status = ?", model.SharedAssetReady)

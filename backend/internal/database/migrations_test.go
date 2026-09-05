@@ -41,6 +41,9 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	if !db.Migrator().HasColumn(&model.User{}, "SharedLibraryEnabled") {
 		t.Fatal("schema migration v4 did not add users.shared_library_enabled")
 	}
+	if !db.Migrator().HasColumn(&model.SharedAssetSeries{}, "ParentID") || !db.Migrator().HasIndex(&model.SharedAssetSeries{}, "ParentID") {
+		t.Fatal("schema migration v7 did not add indexed shared_asset_series.parent_id")
+	}
 	resource := model.Resource{ID: "shared-resource-v5", UserID: "user-1", Size: 123}
 	asset := model.SharedAsset{ID: "shared-asset-v5", SeriesID: "series-1", UploaderUserID: "user-1", ResourceID: resource.ID, ThumbnailResourceID: resource.ID, UploadItemID: "item-v5"}
 	if err := db.Create(&resource).Error; err != nil {

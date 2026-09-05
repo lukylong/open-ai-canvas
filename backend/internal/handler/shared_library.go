@@ -46,13 +46,14 @@ func RegisterSharedLibraryRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		var req struct {
-			Name string `json:"name"`
+			Name     string `json:"name"`
+			ParentID string `json:"parentId"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
-		row, err := svc.CreateSharedAssetSeries(user, req.Name)
+		row, err := svc.CreateSharedAssetSeries(user, req.Name, req.ParentID)
 		if err != nil {
 			failService(c, err)
 			return
@@ -66,13 +67,14 @@ func RegisterSharedLibraryRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		var req struct {
-			Name string `json:"name"`
+			Name     string  `json:"name"`
+			ParentID *string `json:"parentId"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
-		row, err := svc.UpdateSharedAssetSeries(user, c.Param("id"), req.Name)
+		row, err := svc.UpdateSharedAssetSeries(user, c.Param("id"), req.Name, req.ParentID)
 		if err != nil {
 			failService(c, err)
 			return

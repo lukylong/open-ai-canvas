@@ -8,6 +8,7 @@ export type AssetReference =
 export type SharedAssetSeries = {
     id: string;
     name: string;
+    parentId?: string;
     ownerUserId: string;
     coverResourceId?: string;
     status: "preparing" | "ready" | "archived";
@@ -89,8 +90,8 @@ export type RememberedSharedBatch = { id: string; manifest: Array<{ clientId: st
 
 export function getSharedUploadPolicy() { return request<SharedUploadPolicy>(apiClient.get("/shared-library/upload-policy")); }
 export function listSharedSeries() { return request<{ series: SharedAssetSeries[] }>(apiClient.get("/shared-library/series")); }
-export function createSharedSeries(name: string) { return request<{ series: SharedAssetSeries }>(apiClient.post("/shared-library/series", { name })); }
-export function updateSharedSeries(id: string, name: string) { return request<{ series: SharedAssetSeries }>(apiClient.patch(`/shared-library/series/${encodeURIComponent(id)}`, { name })); }
+export function createSharedSeries(name: string, parentId = "") { return request<{ series: SharedAssetSeries }>(apiClient.post("/shared-library/series", { name, parentId })); }
+export function updateSharedSeries(id: string, input: { name: string; parentId: string }) { return request<{ series: SharedAssetSeries }>(apiClient.patch(`/shared-library/series/${encodeURIComponent(id)}`, input)); }
 export function deleteSharedSeries(id: string) { return request<{ ok: true }>(apiClient.delete(`/shared-library/series/${encodeURIComponent(id)}`)); }
 export function listSharedAssets(seriesId?: string) {
     return seriesId
@@ -155,7 +156,7 @@ export async function uploadSharedFiles(files: File[], seriesId: string, onProgr
     return detail;
 }
 
-export async function uploadSharedZIP(file: File, seriesName: string, onProgress?: (value: UploadProgress) => void): Promise<SharedUploadBatchDetail> {
+export async function uploadSharedZIP(file: File, seriesName: string, seriesParentId: string, onProgress?: (value: UploadProgress) => void): Promise<SharedUploadBatchDetail> {
     const policy = await getSharedUploadPolicy();
     if (file.size > policy.zipMaxBytes) throw new Error(`ZIP 最大 ${formatBytes(policy.zipMaxBytes)}`);
     const directory = await inspectZIPCentralDirectory(file);
@@ -166,7 +167,7 @@ export async function uploadSharedZIP(file: File, seriesName: string, onProgress
     onProgress?.({ completed: 0, total: 1, fileName: file.name, phase: "hashing" });
     const manifest = [{ clientId: fileClientId(file), fileName: file.name, mimeType: file.type || "application/zip", size: file.size, sha256: await sha256File(file) }];
     let detail = await request<SharedUploadBatchDetail>(apiClient.post("/shared-library/upload-batches", {
-        mode: "zip", seriesName, files: manifest, zipEntryCount: directory.entryCount, zipDeclaredBytes: directory.uncompressedBytes, zipEncrypted: directory.encrypted,
+        mode: "zip", seriesName, seriesParentId, files: manifest, zipEntryCount: directory.entryCount, zipDeclaredBytes: directory.uncompressedBytes, zipEncrypted: directory.encrypted,
     }));
     rememberSharedBatch(detail.batch.id, manifest);
     detail = await uploadTargets(detail, [file], 1, onProgress);
