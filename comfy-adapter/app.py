@@ -47,6 +47,10 @@ class JobRequest(BaseModel):
 app = FastAPI(title="Canvas ComfyUI Workflow Adapter", version="1.0.0")
 
 
+def auto_balance_enabled() -> bool:
+    return os.getenv("COMFY_AUTO_BALANCE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def providers() -> dict[str, Provider]:
     raw = os.getenv("COMFY_PROVIDERS_JSON", "").strip()
     rows: list[dict[str, Any]] = []
@@ -71,6 +75,35 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
 
 def provider_headers(provider: Provider) -> dict[str, str]:
     return {"Authorization": f"Bearer {provider.api_key}"} if provider.api_key else {}
+
+
+async def provider_queue_depth(provider: Provider) -> int | None:
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{provider.base_url}/queue", headers=provider_headers(provider))
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+    return len(payload.get("queue_running") or []) + len(payload.get("queue_pending") or [])
+
+
+async def select_provider(requested_provider_id: str) -> Provider | None:
+    configured = providers()
+    requested = configured.get(requested_provider_id)
+    if requested is None or requested_provider_id != "default" or not auto_balance_enabled() or len(configured) < 2:
+        return requested
+
+    candidates = list(configured.values())
+    depths = await asyncio.gather(*(provider_queue_depth(provider) for provider in candidates))
+    available = [
+        (depth, 0 if provider.id == requested_provider_id else 1, provider)
+        for provider, depth in zip(candidates, depths)
+        if depth is not None
+    ]
+    if not available:
+        return requested
+    return min(available, key=lambda item: (item[0], item[1]))[2]
 
 
 def input_host_allowlist() -> set[str]:
@@ -131,7 +164,12 @@ def decode_job(job_id: str) -> tuple[Provider, str]:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "ok", "providers": len(providers()), "workflows": len(load_registry())}
+    return {
+        "status": "ok",
+        "providers": len(providers()),
+        "workflows": len(load_registry()),
+        "autoBalance": auto_balance_enabled(),
+    }
 
 
 @app.get("/v1/providers", dependencies=[Depends(require_token)])
@@ -180,7 +218,7 @@ async def upload_image(client: httpx.AsyncClient, provider: Provider, value: str
 async def create_job(request: JobRequest) -> dict[str, Any]:
     registry = load_registry()
     spec = registry.get(request.workflow_key)
-    provider = providers().get(request.provider_id)
+    provider = await select_provider(request.provider_id)
     if spec is None:
         raise HTTPException(status_code=400, detail="workflow is not registered")
     if provider is None:
@@ -231,7 +269,19 @@ async def job_state(job_id: str) -> tuple[Provider, str, dict[str, Any], list[di
 
 @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_token)])
 async def get_job(job_id: str) -> dict[str, Any]:
-    provider, prompt_id, entry, outputs = await job_state(job_id)
+    try:
+        provider, prompt_id, entry, outputs = await job_state(job_id)
+    except httpx.TimeoutException:
+        provider, prompt_id = decode_job(job_id)
+        return {
+            "id": job_id,
+            "promptId": prompt_id,
+            "providerId": provider.id,
+            "status": "running",
+            "outputs": [],
+            "error": "",
+            "pollDeferred": True,
+        }
     status_payload = entry.get("status") or {}
     if status_payload.get("status_str") == "error":
         status = "failed"
