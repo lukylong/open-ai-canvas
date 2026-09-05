@@ -206,7 +206,7 @@ async def list_models() -> dict[str, Any]:
     return {"object": "list", "data": [public_model(item) for item in load_registry().values()]}
 
 
-async def upload_image(client: httpx.AsyncClient, provider: Provider, value: str, index: int) -> str:
+async def upload_image(client: httpx.AsyncClient, provider: Provider, value: str, index: int, client_id: str) -> str:
     value = value.strip()
     if value.startswith("comfy://"):
         return value.removeprefix("comfy://")
@@ -226,7 +226,7 @@ async def upload_image(client: httpx.AsyncClient, provider: Provider, value: str
     if len(data) > 30 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="reference image exceeds 30 MB")
     extension = mimetypes.guess_extension(mime_type) or ".png"
-    filename = f"canvas-reference-{index}{extension}"
+    filename = f"{client_id}-reference-{index}{extension}"
     response = await client.post(f"{provider.base_url}/upload/image", files={"image": (filename, data, mime_type)}, data={"overwrite": "true"}, headers=provider_headers(provider))
     response.raise_for_status()
     payload = response.json()
@@ -245,7 +245,7 @@ async def create_job(request: JobRequest) -> dict[str, Any]:
     try:
         client_id = f"canvas-{secrets.token_hex(8)}"
         async with httpx.AsyncClient(timeout=60) as client:
-            uploaded = [await upload_image(client, provider, value, index) for index, value in enumerate(request.input_images, start=1)]
+            uploaded = [await upload_image(client, provider, value, index, client_id) for index, value in enumerate(request.input_images, start=1)]
             try:
                 workflow = compile_workflow(spec, request.model_dump(), uploaded, client_id)
             except ValueError as exc:

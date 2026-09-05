@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import unittest
@@ -91,6 +92,22 @@ class ProviderSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "running")
         self.assertTrue(result["pollDeferred"])
         self.assertEqual(result["providerId"], "default")
+
+    async def test_uploaded_reference_filename_is_scoped_to_client(self):
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"name": "canvas-job-a-reference-1.png"})
+        )
+        encoded = base64.b64encode(b"png-data").decode()
+        async with httpx.AsyncClient(transport=transport) as client:
+            filename = await app.upload_image(
+                client,
+                app.Provider(id="gpu3", name="GPU3", base_url="http://gpu3"),
+                "data:image/png;base64," + encoded,
+                1,
+                "canvas-job-a",
+            )
+
+        self.assertEqual(filename, "canvas-job-a-reference-1.png")
 
 
 if __name__ == "__main__":

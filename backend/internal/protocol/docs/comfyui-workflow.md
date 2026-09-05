@@ -18,7 +18,7 @@
 
 创建请求为 JSON。稳定字段包括 `workflow_key`、`provider_id`、`prompt`、`negative_prompt`、`input_images`、`width`、`height`、`duration`、`generate_audio`、`seed`、`batch_size`、`denoise` 与 `metadata`。工作流编译器只修改注册表声明的节点和字段，未声明字段不会凭名称注入任意节点。图片列表最多九张；单个下载或 data URL 解码后的文件最多 30 MB；批次数量范围为一到四；宽高范围为 64 到 8192；时长大于零且最多 60 秒；降噪范围为零到一。
 
-`input_images` 可以使用 HTTP(S) URL、带 MIME 的 data URL 或 `comfy://` 已存在文件引用。HTTP(S) 下载默认拒绝私网、链路本地和重定向地址，只有显式列入 `COMFY_INPUT_HOST_ALLOWLIST` 的主机例外。外部图片会先上传到选定 ComfyUI 的 `/upload/image`，然后把服务端文件名写入工作流。生产环境的素材应优先使用平台资源存储的稳定 URL，避免临时签名地址在排队期间过期。
+`input_images` 可以使用 HTTP(S) URL、带 MIME 的 data URL 或 `comfy://` 已存在文件引用。HTTP(S) 下载默认拒绝私网、链路本地和重定向地址，只有显式列入 `COMFY_INPUT_HOST_ALLOWLIST` 的主机例外。外部图片会先用任务级唯一文件名上传到选定 ComfyUI 的 `/upload/image`，然后把服务端文件名写入工作流，后提交的排队任务不得覆盖先前任务的参考图。生产环境的素材应优先使用平台资源存储的稳定 URL，避免临时签名地址在排队期间过期。
 
 {{PARAMETERS}}
 
