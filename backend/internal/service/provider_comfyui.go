@@ -30,6 +30,12 @@ type comfyUIJobState struct {
 }
 
 func runComfyUIWorkflowTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	release, err := acquireComfyUIExecutionSlot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	id := resumedProviderRequestID(ctx)
 	if id == "" {
 		width, height := comfyUIDimensions(input.Mode, input.Config.Size, input.Config.VQuality)
@@ -90,6 +96,23 @@ func runComfyUIWorkflowTask(ctx context.Context, input canvasGenerationInput) (m
 		return nil, err
 	}
 	return nil, context.DeadlineExceeded
+}
+
+func acquireComfyUIExecutionSlot(ctx context.Context, input canvasGenerationInput) (func(), error) {
+	metadata, ok := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
+	if !ok || metadata.Service == nil {
+		return func() {}, nil
+	}
+	ttl := time.Until(providerPollingDeadline(ctx)) + time.Minute
+	if ttl < time.Minute {
+		ttl = time.Minute
+	}
+	fallbackScope := "comfyui:" + strings.ToLower(strings.TrimSpace(input.Config.BaseURL))
+	release, _, err := metadata.Service.AcquireChannelTaskSlot(ctx, metadata.ChannelID, fallbackScope, ttl)
+	if err != nil {
+		return nil, err
+	}
+	return release, nil
 }
 
 func comfyUIWorkflowResult(ctx context.Context, input canvasGenerationInput, id string, outputs []comfyUIJobOutput) (map[string]interface{}, error) {

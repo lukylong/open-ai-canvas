@@ -64,3 +64,44 @@ func TestRuntimeConcurrencySettingPersistsAndChannelOverrideWins(t *testing.T) {
 		t.Fatalf("overridden channel limit = %d, want 9", limit)
 	}
 }
+
+func TestChannelTaskSlotUsesFullTaskLimitWithoutBlockingHTTPSlot(t *testing.T) {
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("CANVAS_WORKER_CONCURRENCY", "3")
+	t.Setenv("CANVAS_CHANNEL_CONCURRENCY", "3")
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
+	if err := db.AutoMigrate(&model.SystemSetting{}, &model.AdminAuditEvent{}, &model.ModelChannel{}); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(repository.New(db), t.TempDir())
+	channel := model.ModelChannel{ID: "comfy", Scope: model.ChannelScopeSystem, Enabled: true, ConcurrencyLimit: 1}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	releaseTask, limit, err := svc.AcquireChannelTaskSlot(context.Background(), channel.ID, "", time.Minute)
+	if err != nil || limit != 1 {
+		t.Fatalf("AcquireChannelTaskSlot() limit = %d, err = %v", limit, err)
+	}
+	defer releaseTask()
+
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), time.Second)
+	defer cancelRequest()
+	releaseRequest, _, err := svc.AcquireChannelSlot(requestCtx, channel.ID, "", time.Minute)
+	if err != nil {
+		t.Fatalf("HTTP slot should use an independent scope: %v", err)
+	}
+	releaseRequest()
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelWait()
+	if _, _, err := svc.AcquireChannelTaskSlot(waitCtx, channel.ID, "", time.Minute); err == nil {
+		t.Fatal("second task slot unexpectedly bypassed channel limit")
+	}
+}

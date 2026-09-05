@@ -276,6 +276,17 @@ func effectiveChannelConcurrencyLimit(configured int) int {
 }
 
 func (s *Service) AcquireChannelSlot(ctx context.Context, channelID string, fallbackScope string, ttl time.Duration) (func(), int, error) {
+	return s.acquireChannelScopedSlot(ctx, "channel:", channelID, fallbackScope, ttl)
+}
+
+// AcquireChannelTaskSlot limits complete asynchronous provider task lifecycles.
+// It deliberately uses a different coordination scope from per-request HTTP
+// slots so a task can poll its provider without deadlocking against itself.
+func (s *Service) AcquireChannelTaskSlot(ctx context.Context, channelID string, fallbackScope string, ttl time.Duration) (func(), int, error) {
+	return s.acquireChannelScopedSlot(ctx, "channel-task:", channelID, fallbackScope, ttl)
+}
+
+func (s *Service) acquireChannelScopedSlot(ctx context.Context, prefix string, channelID string, fallbackScope string, ttl time.Duration) (func(), int, error) {
 	setting, err := s.runtimeConcurrencySetting()
 	limit := defaultChannelConcurrencyLimit()
 	if err != nil {
@@ -303,7 +314,7 @@ func (s *Service) AcquireChannelSlot(ctx context.Context, channelID string, fall
 	if s.coordinator == nil {
 		return nil, limit, channelSlotError{scope: scope, limit: limit, err: errors.New("运行时协调器未初始化")}
 	}
-	release, err := s.coordinator.acquireWithWait(ctx, "channel:"+scope, limit, ttl)
+	release, err := s.coordinator.acquireWithWait(ctx, prefix+scope, limit, ttl)
 	if err != nil {
 		return nil, limit, channelSlotError{scope: scope, limit: limit, err: err}
 	}
