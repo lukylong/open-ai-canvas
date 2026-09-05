@@ -30,13 +30,13 @@ type comfyUIJobState struct {
 }
 
 func runComfyUIWorkflowTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
-	release, err := acquireComfyUIExecutionSlot(ctx, input)
+	id := resumedProviderRequestID(ctx)
+	release, err := acquireComfyUIExecutionSlot(ctx, input, id != "")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 
-	id := resumedProviderRequestID(ctx)
 	if id == "" {
 		width, height := comfyUIDimensions(input.Mode, input.Config.Size, input.Config.VQuality)
 		images := make([]string, 0, len(input.ReferenceImages))
@@ -70,6 +70,7 @@ func runComfyUIWorkflowTask(ctx context.Context, input canvasGenerationInput) (m
 		if id == "" {
 			return nil, errors.New("ComfyUI 工作流适配器没有返回任务 ID")
 		}
+		updateComfyUIExecutionStage(ctx, "上游视频生成中")
 	}
 
 	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
@@ -98,7 +99,7 @@ func runComfyUIWorkflowTask(ctx context.Context, input canvasGenerationInput) (m
 	return nil, context.DeadlineExceeded
 }
 
-func acquireComfyUIExecutionSlot(ctx context.Context, input canvasGenerationInput) (func(), error) {
+func acquireComfyUIExecutionSlot(ctx context.Context, input canvasGenerationInput, alreadySubmitted bool) (func(), error) {
 	metadata, ok := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
 	if !ok || metadata.Service == nil {
 		return func() {}, nil
@@ -108,17 +109,27 @@ func acquireComfyUIExecutionSlot(ctx context.Context, input canvasGenerationInpu
 		ttl = time.Minute
 	}
 	fallbackScope := "comfyui:" + strings.ToLower(strings.TrimSpace(input.Config.BaseURL))
-	if strings.TrimSpace(metadata.TaskID) != "" {
-		_ = metadata.Service.repo.UpdateTaskProgress(metadata.TaskID, "等待可用生成节点", 0)
+	waitingStage := "等待可用生成节点"
+	if alreadySubmitted {
+		waitingStage = "上游视频生成中"
 	}
+	updateComfyUIExecutionStage(ctx, waitingStage)
 	release, _, err := metadata.Service.AcquireChannelTaskSlot(ctx, metadata.ChannelID, fallbackScope, ttl)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(metadata.TaskID) != "" {
-		_ = metadata.Service.repo.UpdateTaskProgress(metadata.TaskID, "正在连接上游", 0)
+	if !alreadySubmitted {
+		updateComfyUIExecutionStage(ctx, "正在连接上游")
 	}
 	return release, nil
+}
+
+func updateComfyUIExecutionStage(ctx context.Context, stage string) {
+	metadata, ok := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
+	if !ok || metadata.Service == nil || strings.TrimSpace(metadata.TaskID) == "" {
+		return
+	}
+	_ = metadata.Service.repo.UpdateTaskProgress(metadata.TaskID, stage, 0)
 }
 
 func comfyUIWorkflowResult(ctx context.Context, input canvasGenerationInput, id string, outputs []comfyUIJobOutput) (map[string]interface{}, error) {
