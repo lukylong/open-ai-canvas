@@ -108,9 +108,15 @@ func acquireComfyUIExecutionSlot(ctx context.Context, input canvasGenerationInpu
 		ttl = time.Minute
 	}
 	fallbackScope := "comfyui:" + strings.ToLower(strings.TrimSpace(input.Config.BaseURL))
+	if strings.TrimSpace(metadata.TaskID) != "" {
+		_ = metadata.Service.repo.UpdateTaskProgress(metadata.TaskID, "等待可用生成节点", 0)
+	}
 	release, _, err := metadata.Service.AcquireChannelTaskSlot(ctx, metadata.ChannelID, fallbackScope, ttl)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(metadata.TaskID) != "" {
+		_ = metadata.Service.repo.UpdateTaskProgress(metadata.TaskID, "正在连接上游", 0)
 	}
 	return release, nil
 }
