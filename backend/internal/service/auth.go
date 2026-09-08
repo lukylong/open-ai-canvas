@@ -43,6 +43,7 @@ type PublicAuthSettings struct {
 	FirstUser           bool `json:"firstUser"`
 	RegistrationEnabled bool `json:"registrationEnabled"`
 	LinuxDOEnabled      bool `json:"linuxdoEnabled"`
+	IAMEnabled          bool `json:"iamEnabled"`
 	EmailEnabled        bool `json:"emailEnabled"`
 	EmailCodeRequired   bool `json:"emailCodeRequired"`
 }
@@ -83,7 +84,7 @@ func (s *Service) PublicAuthSettings() (*PublicAuthSettings, error) {
 		return nil, err
 	}
 	if count == 0 {
-		return &PublicAuthSettings{FirstUser: true, RegistrationEnabled: true, LinuxDOEnabled: false}, nil
+		return &PublicAuthSettings{FirstUser: true, RegistrationEnabled: true, LinuxDOEnabled: false, IAMEnabled: s.IAMOIDCEnabled()}, nil
 	}
 	registrationEnabled, err := s.RegistrationEnabled()
 	if err != nil {
@@ -93,7 +94,7 @@ func (s *Service) PublicAuthSettings() (*PublicAuthSettings, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &PublicAuthSettings{FirstUser: false, RegistrationEnabled: registrationEnabled, LinuxDOEnabled: s.LinuxDOEnabled(), EmailEnabled: emailEnabled, EmailCodeRequired: true}, nil
+	return &PublicAuthSettings{FirstUser: false, RegistrationEnabled: registrationEnabled, LinuxDOEnabled: s.LinuxDOEnabled(), IAMEnabled: s.IAMOIDCEnabled(), EmailEnabled: emailEnabled, EmailCodeRequired: true}, nil
 }
 
 func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
@@ -245,17 +246,20 @@ func (s *Service) CurrentUser(cookieValue string) (*model.User, error) {
 // 认证响应只补充当前用户自己的第三方公开身份，不把身份表或密钥字段暴露给其他列表接口。
 func (s *Service) PublicAuthUser(user *model.User) (AuthUser, error) {
 	result := AuthUser{User: *user}
-	identity, err := s.repo.UserIdentityForUser(user.ID, "linuxdo")
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	for _, provider := range []string{iamOIDCProvider, "linuxdo"} {
+		identity, err := s.repo.UserIdentityForUser(user.ID, provider)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return AuthUser{}, err
+		}
+		result.AvatarURL = identity.AvatarURL
+		result.IdentityProvider = identity.Provider
+		result.IdentityID = identity.Subject
+		result.IdentityUsername = identity.ProviderUsername
 		return result, nil
 	}
-	if err != nil {
-		return AuthUser{}, err
-	}
-	result.AvatarURL = identity.AvatarURL
-	result.IdentityProvider = identity.Provider
-	result.IdentityID = identity.Subject
-	result.IdentityUsername = identity.ProviderUsername
 	return result, nil
 }
 

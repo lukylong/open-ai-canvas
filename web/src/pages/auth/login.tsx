@@ -1,10 +1,10 @@
 import { type FormEvent, useEffect, useState, type ReactNode } from "react";
 import { App, Button, Divider, Input } from "antd";
-import { ArrowRight, LockKeyhole, UserRound } from "lucide-react";
+import { ArrowRight, LockKeyhole, ShieldCheck, UserRound } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { applyUserSession } from "@/lib/user-session";
-import { getAuthSession, getAuthSettings, linuxDOLoginURL, login } from "@/services/api/auth";
+import { getAuthSession, getAuthSettings, iamLoginURL, linuxDOLoginURL, login } from "@/services/api/auth";
 import { LinuxDOIcon } from "./auth-scene";
 
 export default function LoginPage() {
@@ -15,10 +15,14 @@ export default function LoginPage() {
     const [password, setPassword] = useState("");
     const [submitting, setSubmitting] = useState(false);
     const [linuxdoEnabled, setLinuxdoEnabled] = useState(false);
+    const [iamEnabled, setIAMEnabled] = useState(false);
     const next = safeNext(params.get("next"));
 
     useEffect(() => {
-        void getAuthSettings().then((settings) => setLinuxdoEnabled(settings.linuxdoEnabled)).catch(() => undefined);
+        void getAuthSettings().then((settings) => {
+            setLinuxdoEnabled(settings.linuxdoEnabled);
+            setIAMEnabled(settings.iamEnabled);
+        }).catch(() => undefined);
         const oauthError = params.get("oauth_error");
         if (oauthError) message.error(oauthError);
     }, [message, params]);
@@ -40,6 +44,7 @@ export default function LoginPage() {
 
     return (
         <form onSubmit={submit} className="space-y-5">
+            {iamEnabled ? <><Button type="primary" size="large" block icon={<ShieldCheck className="size-4" />} href={iamLoginURL(next)}>使用 IAM Hub 快捷登录</Button><Divider plain className="!border-white/10 !text-white/30">或使用影策本地账号</Divider></> : null}
             <AuthField label="用户名 / 邮箱"><Input size="large" prefix={<UserRound className="size-4 text-white/35" />} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="用户名或邮箱" autoComplete="username" required /></AuthField>
             <AuthField label="密码"><Input.Password size="large" prefix={<LockKeyhole className="size-4 text-white/35" />} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" autoComplete="current-password" required /></AuthField>
             <Button type="primary" htmlType="submit" size="large" block loading={submitting} icon={<ArrowRight className="size-4" />} iconPlacement="end">登录</Button>

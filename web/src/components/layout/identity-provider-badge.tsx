@@ -6,8 +6,13 @@ export function isLinuxDOIdentity(user?: IdentityUser | null) {
     return user?.identityProvider?.trim().toLowerCase() === "linuxdo";
 }
 
+export function isIAMIdentity(user?: IdentityUser | null) {
+    return user?.identityProvider?.trim().toLowerCase() === "iam-hub";
+}
+
 export function IdentityProviderBadge({ user, compact = false, className }: { user: IdentityUser; compact?: boolean; className?: string }) {
-    if (!isLinuxDOIdentity(user)) return null;
+    const iam = isIAMIdentity(user);
+    if (!iam && !isLinuxDOIdentity(user)) return null;
     return (
         <span
             className={cn(
@@ -15,9 +20,9 @@ export function IdentityProviderBadge({ user, compact = false, className }: { us
                 compact ? "size-3.5 rounded-full text-[var(--fs-micro)] leading-none" : "h-4 rounded px-1 text-[var(--fs-micro)] leading-none",
                 className,
             )}
-            title={user.identityUsername ? `Linux.do · @${user.identityUsername}` : "Linux.do 用户"}
+            title={iam ? (user.identityUsername ? `IAM Hub · ${user.identityUsername}` : "IAM Hub 员工") : (user.identityUsername ? `Linux.do · @${user.identityUsername}` : "Linux.do 用户")}
         >
-            {compact ? "L" : "Linux.do"}
+            {compact ? (iam ? "I" : "L") : (iam ? "IAM Hub" : "Linux.do")}
         </span>
     );
 }

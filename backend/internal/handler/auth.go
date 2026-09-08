@@ -100,6 +100,18 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Redirect(http.StatusFound, target)
 	})
 	r.GET("/auth/linuxdo/callback", linuxDOCallbackHandler(svc))
+	r.GET("/auth/iam/start", func(c *gin.Context) {
+		if !enforceRateLimit(c, "iam-start:"+c.ClientIP(), 20, 10*time.Minute) {
+			return
+		}
+		target, err := svc.BeginIAMOIDCLogin(c.Request.Context(), c.Query("next"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Redirect(http.StatusFound, target)
+	})
+	r.GET("/auth/iam/callback", iamOIDCCallbackHandler(svc))
 	r.POST("/auth/logout", func(c *gin.Context) {
 		_ = svc.Logout(sessionCookie(c))
 		clearSessionCookie(c)
@@ -168,6 +180,21 @@ func linuxDOCallbackHandler(svc *service.Service) gin.HandlerFunc {
 			return
 		}
 		result, err := svc.CompleteLinuxDOLogin(c.Query("state"), c.Query("code"))
+		if err != nil {
+			c.Redirect(http.StatusFound, "/login?oauth_error="+url.QueryEscape(err.Error()))
+			return
+		}
+		setSessionCookie(c, result.Session.Session, result.Session.MaxAgeSecs)
+		c.Redirect(http.StatusFound, result.Next)
+	}
+}
+
+func iamOIDCCallbackHandler(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !enforceRateLimit(c, "iam-callback:"+c.ClientIP(), 30, 10*time.Minute) {
+			return
+		}
+		result, err := svc.CompleteIAMOIDCLogin(c.Request.Context(), c.Query("state"), c.Query("code"))
 		if err != nil {
 			c.Redirect(http.StatusFound, "/login?oauth_error="+url.QueryEscape(err.Error()))
 			return

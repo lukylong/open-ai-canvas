@@ -40,6 +40,7 @@ type OAuthState struct {
 	Provider     string     `json:"provider" gorm:"index;size:32"`
 	StateHash    string     `json:"-" gorm:"uniqueIndex;size:64"`
 	CodeVerifier string     `json:"-" gorm:"size:160"`
+	NonceHash    string     `json:"-" gorm:"size:64"`
 	NextPath     string     `json:"nextPath"`
 	ExpiresAt    time.Time  `json:"expiresAt" gorm:"index"`
 	UsedAt       *time.Time `json:"usedAt" gorm:"index"`

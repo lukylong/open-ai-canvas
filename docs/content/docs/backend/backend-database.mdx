@@ -1,0 +1,24 @@
+---
+title: 后端数据库
+description: 影策后端认证相关数据表与迁移说明
+---
+
+# 后端数据库
+
+## 认证身份表
+
+- `user_identities`：保存影策本地用户与外部身份的映射。IAM Hub 使用 `provider=iam-hub`，`subject` 保存已校验 ID Token 的 OIDC `sub`。
+- `o_auth_states`：保存一次性 OIDC 登录状态。`state_hash` 防止回调伪造，`code_verifier` 用于 PKCE，`nonce_hash` 用于校验 ID Token nonce；回调消费后写入 `used_at`，过期或重复状态不能再次使用。
+- `auth_sessions`：保存影策本地会话。IAM Hub 登录成功后仍由影策签发自己的 HttpOnly Cookie，会话不暴露 Keycloak Token。
+
+服务启动时由 GORM `AutoMigrate` 增加 `o_auth_states.nonce_hash`，SQLite 与 PostgreSQL 都沿用现有自动迁移流程。
+
+## IAM Hub 绑定规则
+
+IAM Hub 的 `account_bindings.external_account_id` 保存影策 `users.id`。登录时以 OIDC `sub` 查询授权上下文：
+
+1. 已有 IAM 身份时，IAM Hub 绑定必须与本地用户一致。
+2. 已有经 IAM Hub 验证的旧账号绑定时，只为该用户补建 IAM 身份，不创建重复用户。
+3. 没有绑定时创建普通影策用户，再通过应用凭证把本地用户 ID 回写 IAM Hub。
+
+IAM Hub 员工身份不会继承影策管理员角色，新建账号固定为普通用户。

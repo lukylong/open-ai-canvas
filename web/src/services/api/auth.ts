@@ -335,12 +335,17 @@ export type RuntimePolicySetting = {
 
 
 export function getAuthSettings() {
-    return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean }>(api.get("/auth/settings"));
+    return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; iamEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean }>(api.get("/auth/settings"));
 }
 
 export function linuxDOLoginURL(next: string) {
     const base = String(api.defaults.baseURL || "/api").replace(/\/$/, "");
     return `${base}/auth/linuxdo/start?next=${encodeURIComponent(next)}`;
+}
+
+export function iamLoginURL(next: string) {
+    const base = String(api.defaults.baseURL || "/api").replace(/\/$/, "");
+    return `${base}/auth/iam/start?next=${encodeURIComponent(next)}`;
 }
 
 export function getAuthSession() {

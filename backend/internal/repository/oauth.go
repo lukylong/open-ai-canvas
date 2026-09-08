@@ -59,3 +59,7 @@ func (r *Repository) CreateOAuthUser(user *model.User, identity *model.UserIdent
 		return tx.Create(&model.CreditAccount{UserID: user.ID}).Error
 	})
 }
+
+func (r *Repository) CreateUserIdentity(identity *model.UserIdentity) error {
+	return r.db.Create(identity).Error
+}

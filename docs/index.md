@@ -22,3 +22,8 @@
 - 代码地图：`code-map.mdx`
 - 待办：`todo.mdx`
 - 待测试：`pending-test.mdx`
+
+## 后端专题
+
+- [后端数据库与 IAM Hub 身份绑定](content/docs/backend/backend-database.mdx)
+- [待验证事项](content/docs/progress/pending-test.mdx)
