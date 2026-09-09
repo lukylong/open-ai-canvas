@@ -69,6 +69,51 @@ func (r *Repository) SharedAsset(id string) (*model.SharedAsset, error) {
 
 func (r *Repository) SaveSharedAsset(row *model.SharedAsset) error { return r.db.Save(row).Error }
 
+func (r *Repository) MoveSharedAsset(asset *model.SharedAsset, targetSeriesID string, clearCoverSeriesIDs []string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
+		result := tx.Model(&model.SharedAsset{}).
+			Where("id = ? AND series_id = ? AND status = ?", asset.ID, asset.SeriesID, model.SharedAssetReady).
+			Updates(map[string]any{"series_id": targetSeriesID, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		if len(clearCoverSeriesIDs) > 0 {
+			if err := tx.Model(&model.SharedAssetSeries{}).
+				Where("id IN ? AND cover_resource_id = ?", clearCoverSeriesIDs, asset.ResourceID).
+				Updates(map[string]any{"cover_resource_id": "", "updated_at": now}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&model.SharedAssetSeries{}).Where("id IN ?", []string{asset.SeriesID, targetSeriesID}).Update("updated_at", now).Error
+	})
+}
+
+func (r *Repository) SetSharedAssetSeriesCover(id, resourceID string) error {
+	result := r.db.Model(&model.SharedAssetSeries{}).Where("id = ? AND status = ?", id, model.SharedAssetSeriesReady).
+		Updates(map[string]any{"cover_resource_id": resourceID, "updated_at": time.Now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *Repository) ArchiveSharedAsset(asset *model.SharedAsset) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(asset).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.SharedAssetSeries{}).Where("cover_resource_id = ?", asset.ResourceID).
+			Updates(map[string]any{"cover_resource_id": "", "updated_at": time.Now()}).Error
+	})
+}
+
 type ProjectSharedAssetRecord struct {
 	Link  model.ProjectSharedAssetLink
 	Asset model.SharedAsset

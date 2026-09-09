@@ -18,6 +18,8 @@ import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } f
 import { groupAssetSeries, type AssetSeries } from "@/lib/asset-series";
 import { formatBytes, readFileAsDataUrl, readImageMeta } from "@/lib/image-utils";
 import { buildSharedSeriesTree, flattenSharedSeriesTree, sharedSeriesDescendantIds, sharedSeriesPath, type SharedSeriesTreeNode } from "@/lib/shared-series-tree";
+import { resolveSharedSeriesCover, sharedSeriesCoverCandidates } from "@/lib/shared-series-cover";
+import { SharedSeriesCoverPicker } from "./shared-series-cover-picker";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { useAssetStore, type Asset, type AssetCategory, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
@@ -26,7 +28,7 @@ import { AssetStorageUsage, assetStorageUsageQueryKey } from "./asset-storage-us
 import { deleteAssetWithRemoteSync, syncRemoteUserData } from "@/services/user-data-sync";
 import { cancelPublication, listPublications, publishAsset, publishAssets, retryPublication, type DistributionPublication } from "@/services/api/distribution";
 import { useUserStore } from "@/stores/use-user-store";
-import { createSharedSeries, deleteSharedAsset, deleteSharedSeries, forgetSharedBatch, getSharedUploadBatch, getSharedUploadPolicy, listRememberedSharedBatches, listSharedAssets, listSharedSeries, resumeSharedUploadBatch, updateSharedAsset, updateSharedSeries, uploadSharedFiles, uploadSharedZIP, type SharedAsset, type SharedAssetSeries, type SharedUploadBatchDetail, type SharedUploadPolicy, type UploadProgress } from "@/services/api/shared-library";
+import { createSharedSeries, deleteSharedAsset, deleteSharedSeries, forgetSharedBatch, getSharedUploadBatch, getSharedUploadPolicy, listRememberedSharedBatches, listSharedAssets, listSharedSeries, moveSharedAsset, resumeSharedUploadBatch, setSharedSeriesCover, updateSharedAsset, updateSharedSeries, uploadSharedFiles, uploadSharedZIP, type SharedAsset, type SharedAssetSeries, type SharedUploadBatchDetail, type SharedUploadPolicy, type UploadProgress } from "@/services/api/shared-library";
 
 
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
@@ -819,6 +821,10 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
     const [editingSeries, setEditingSeries] = useState<SharedAssetSeries | null>(null);
     const [editingSeriesName, setEditingSeriesName] = useState("");
     const [editingSeriesParentId, setEditingSeriesParentId] = useState("");
+    const [movingAsset, setMovingAsset] = useState<SharedAsset | null>(null);
+    const [moveTargetId, setMoveTargetId] = useState("");
+    const [coverSeries, setCoverSeries] = useState<SharedAssetSeries | null>(null);
+    const [coverAssetId, setCoverAssetId] = useState("");
     const [zipSeriesParentId, setZIPSeriesParentId] = useState("");
     const filesInputRef = useRef<HTMLInputElement>(null);
     const zipInputRef = useRef<HTMLInputElement>(null);
@@ -896,6 +902,8 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
         return buildSharedSeriesTree(series, allowed);
     }, [editingSeries, series]);
     const selectedOwnedSeriesId = selectedSeries && selectedSeries.ownerUserId === currentUser?.id ? selectedSeries.id : "";
+    const moveTargetOptions = useMemo(() => buildSharedSeriesTree(series, new Set(manageableSeries.filter((item) => item.id !== movingAsset?.seriesId).map((item) => item.id))), [manageableSeries, movingAsset, series]);
+    const coverCandidates = useMemo(() => coverSeries ? sharedSeriesCoverCandidates(series, assets, coverSeries.id) : [], [assets, coverSeries, series]);
     const uploadPolicySummary = policy ? `JPG / PNG / WebP · 单张 ≤ ${formatBytes(policy.singleMaxBytes)} · 批量 ≤ ${policy.batchMaxFiles} 张 · ZIP ≤ ${formatBytes(policy.zipMaxBytes)}` : "正在读取上传说明";
 
     const analysis = useMemo(() => {
@@ -973,6 +981,42 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
         catch (error) { message.error(error instanceof Error ? error.message : "更新素材失败"); }
     };
 
+    const openMoveAsset = (asset: SharedAsset) => {
+        setMovingAsset(asset);
+        setMoveTargetId("");
+    };
+
+    const saveAssetMove = async () => {
+        if (!movingAsset || !moveTargetId || working) return;
+        setWorking(true);
+        try {
+            const result = await moveSharedAsset(movingAsset.id, moveTargetId);
+            setAssets((items) => items.map((item) => item.id === result.asset.id ? result.asset : item));
+            setMovingAsset(null);
+            message.success("图片已移动，已有素材引用保持不变");
+            await load();
+        } catch (error) { message.error(error instanceof Error ? error.message : "移动图片失败"); }
+        finally { setWorking(false); }
+    };
+
+    const openCoverPicker = (item: SharedAssetSeries) => {
+        const candidates = sharedSeriesCoverCandidates(series, assets, item.id);
+        setCoverSeries(item);
+        setCoverAssetId(resolveSharedSeriesCover(item, candidates)?.id || "");
+    };
+
+    const saveSeriesCover = async (item: SharedAssetSeries, assetId: string) => {
+        if (!assetId || working) return;
+        setWorking(true);
+        try {
+            const result = await setSharedSeriesCover(item.id, assetId);
+            setSeries((items) => items.map((entry) => entry.id === result.series.id ? result.series : entry));
+            setCoverSeries(null);
+            message.success("分类封面已更新");
+        } catch (error) { message.error(error instanceof Error ? error.message : "设置分类封面失败"); }
+        finally { setWorking(false); }
+    };
+
     const removeAsset = (asset: SharedAsset) => modal.confirm({
         title: `归档共享素材“${asset.title}”？`, content: "归档后已有共享引用也会停止读取。", okText: "归档", okButtonProps: { danger: true }, cancelText: "取消",
         onOk: async () => { await deleteSharedAsset(asset.id); await load(); message.success("素材已归档"); },
@@ -1015,7 +1059,7 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
                                 const descendantIds = sharedSeriesDescendantIds(series, group.series.id);
                                 const categoryIds = new Set([group.series.id, ...descendantIds]);
                                 const categoryAssets = assets.filter((asset) => categoryIds.has(asset.seriesId));
-                                const cover = group.assets[0] || categoryAssets[0];
+                                const cover = resolveSharedSeriesCover(group.series, sharedSeriesCoverCandidates(series, assets, group.series.id));
                                 const childCount = series.filter((item) => item.parentId === group.series.id).length;
                                 const manageable = currentUser?.role === "admin" || group.series.ownerUserId === currentUser?.id;
                                 const canCreateChild = group.series.ownerUserId === currentUser?.id;
@@ -1023,16 +1067,23 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
                                     cover={<AssetLibraryCardMedia className="assets-cover"><button type="button" className="shared-series-card-cover" onClick={() => setSelectedSeriesId(group.series.id)}>{cover ? <img src={`/api/shared-library/assets/${encodeURIComponent(cover.id)}/thumbnail`} alt={group.series.name} loading="lazy" className="h-full w-full object-cover" /> : <span className="assets-cover-fallback"><FolderOpen /></span>}</button></AssetLibraryCardMedia>}
                                     title={group.series.name} updatedLabel={formatAssetTime(group.series.updatedAt)} summary={`${categoryAssets.length} 个素材 · ${childCount} 个子分类`}
                                     typeLabel={`${group.depth + 1} 级分类`} seriesId={group.series.id} onOpen={() => setSelectedSeriesId(group.series.id)}
-                                    actions={<><button type="button" onClick={() => setSelectedSeriesId(group.series.id)}><FolderOpen />进入</button>{manageable ? <button type="button" onClick={() => openEditSeries(group.series)}><FolderInput />移动</button> : null}{manageable ? <Dropdown menu={{ items: [...(canCreateChild ? [{ key: "child", label: "新建子分类", icon: <Plus className="size-3.5" /> }] : []), { key: "upload", label: "上传素材", icon: <Upload className="size-3.5" /> }, { key: "edit", label: "重命名 / 移动", icon: <PencilLine className="size-3.5" /> }, { key: "delete", label: "归档分类", danger: true, icon: <Trash2 className="size-3.5" /> }], onClick: ({ key }) => { if (key === "child") openCreateSeries(group.series.id); else if (key === "upload") { setUploadSeriesId(group.series.id); setUploadMode("files"); setPendingFiles([]); setProgress(null); setUploadOpen(true); } else if (key === "edit") openEditSeries(group.series); else void removeSeries(group.series); } }}><button type="button" aria-label={`更多分类操作：${group.series.name}`}><MoreHorizontal />更多</button></Dropdown> : null}</>} />;
+                                    actions={<><button type="button" onClick={() => setSelectedSeriesId(group.series.id)}><FolderOpen />进入</button>{manageable ? <button type="button" disabled={working} onClick={() => openCoverPicker(group.series)}><ImageIcon />选择封面</button> : null}{manageable ? <Dropdown menu={{ items: [...(canCreateChild ? [{ key: "child", label: "新建子分类", icon: <Plus className="size-3.5" /> }] : []), { key: "upload", label: "上传素材", icon: <Upload className="size-3.5" /> }, { key: "edit", label: "重命名 / 移动", icon: <PencilLine className="size-3.5" /> }, { key: "delete", label: "归档分类", danger: true, icon: <Trash2 className="size-3.5" /> }], onClick: ({ key }) => { if (key === "child") openCreateSeries(group.series.id); else if (key === "upload") { setUploadSeriesId(group.series.id); setUploadMode("files"); setPendingFiles([]); setProgress(null); setUploadOpen(true); } else if (key === "edit") openEditSeries(group.series); else void removeSeries(group.series); } }}><button type="button" aria-label={`更多分类操作：${group.series.name}`}><MoreHorizontal />更多</button></Dropdown> : null}</>} />;
                             })}
                         </CollectionGrid>
                     </> : null}
                     {selectedSeries ? <>
-                        <div className="mb-3 mt-5 flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">当前分类素材 · {selectedSharedAssets.length}</strong><div className="flex gap-2">{selectedSeries.ownerUserId === currentUser?.id ? <Button size="small" icon={<Plus className="size-3.5" />} onClick={() => openCreateSeries(selectedSeries.id)}>新建子分类</Button> : null}{manageableSeries.some((item) => item.id === selectedSeries.id) ? <Button size="small" type="primary" icon={<Upload className="size-3.5" />} onClick={() => { setUploadSeriesId(selectedSeries.id); setUploadMode("files"); setPendingFiles([]); setProgress(null); setUploadOpen(true); }}>上传到此分类</Button> : null}</div></div>
+                        <div className="mb-3 mt-5 flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">当前分类素材 · {selectedSharedAssets.length}</strong><div className="flex flex-wrap gap-2">{manageableSeries.some((item) => item.id === selectedSeries.id) ? <Button size="small" disabled={working} icon={<ImageIcon className="size-3.5" />} onClick={() => openCoverPicker(selectedSeries)}>选择封面</Button> : null}{selectedSeries.ownerUserId === currentUser?.id ? <Button size="small" icon={<Plus className="size-3.5" />} onClick={() => openCreateSeries(selectedSeries.id)}>新建子分类</Button> : null}{manageableSeries.some((item) => item.id === selectedSeries.id) ? <Button size="small" type="primary" icon={<Upload className="size-3.5" />} onClick={() => { setUploadSeriesId(selectedSeries.id); setUploadMode("files"); setPendingFiles([]); setProgress(null); setUploadOpen(true); }}>上传到此分类</Button> : null}</div></div>
                         {selectedSharedAssets.length ? <CollectionGrid className="library-grid assets-library-grid">
                             {selectedSharedAssets.map((asset) => {
                                 const manageable = currentUser?.role === "admin" || selectedSeries.ownerUserId === currentUser?.id;
-                                return <AssetLibraryCard key={asset.id}><AssetLibraryCardMedia className="assets-cover"><img src={`/api/shared-library/assets/${encodeURIComponent(asset.id)}/thumbnail`} alt={asset.title} loading="lazy" className="h-full w-full object-cover" /></AssetLibraryCardMedia><div className="min-w-0 flex-1 px-3 py-2"><h2 className="truncate text-sm font-semibold" title={asset.title}>{asset.title}</h2><p className="mt-1 text-xs text-foreground/45">{asset.width || "?"} × {asset.height || "?"} · {formatBytes(asset.size)}</p></div><div className="asset-series-card-actions"><button type="button" onClick={() => window.open(`/api/shared-library/assets/${encodeURIComponent(asset.id)}/file`, "_blank", "noopener,noreferrer")}>查看原图</button>{manageable ? <Dropdown menu={{ items: [{ key: "rename", label: "重命名", icon: <PencilLine className="size-3.5" /> }, { key: "delete", label: "归档素材", danger: true, icon: <Trash2 className="size-3.5" /> }], onClick: ({ key }) => key === "rename" ? void renameAsset(asset) : void removeAsset(asset) }}><button type="button">管理</button></Dropdown> : null}</div></AssetLibraryCard>;
+                                return <AssetLibraryCard key={asset.id}>
+                                    <AssetLibraryCardMedia className="assets-cover"><img src={`/api/shared-library/assets/${encodeURIComponent(asset.id)}/thumbnail`} alt={asset.title} loading="lazy" className="h-full w-full object-cover" /></AssetLibraryCardMedia>
+                                    <div className="min-w-0 flex-1 px-3 py-2"><h2 className="truncate text-sm font-semibold" title={asset.title}>{asset.title}</h2><p className="mt-1 text-xs text-foreground/45">{asset.width || "?"} × {asset.height || "?"} · {formatBytes(asset.size)}{selectedSeries.coverResourceId === asset.resourceId ? " · 当前封面" : ""}</p></div>
+                                    <div className="asset-series-card-actions"><button type="button" onClick={() => window.open(`/api/shared-library/assets/${encodeURIComponent(asset.id)}/file`, "_blank", "noopener,noreferrer")}>查看原图</button>{manageable ? <>
+                                        <button type="button" disabled={working} onClick={() => openMoveAsset(asset)}><FolderInput />移动</button>
+                                        <Dropdown disabled={working} menu={{ items: [{ key: "cover", label: "设为分类封面", disabled: selectedSeries.coverResourceId === asset.resourceId, icon: <ImageIcon className="size-3.5" /> }, { key: "rename", label: "重命名", icon: <PencilLine className="size-3.5" /> }, { key: "delete", label: "归档素材", danger: true, icon: <Trash2 className="size-3.5" /> }], onClick: ({ key }) => { if (key === "cover") void saveSeriesCover(selectedSeries, asset.id); else if (key === "rename") void renameAsset(asset); else void removeAsset(asset); } }}><button type="button" aria-label={`管理图片：${asset.title}`}><MoreHorizontal />管理</button></Dropdown>
+                                    </> : null}</div>
+                                </AssetLibraryCard>;
                             })}
                         </CollectionGrid> : <WorkspaceState icon="assets" compact title={keyword ? "当前分类没有匹配素材" : "当前分类还没有直属素材"} description="可以继续创建子分类，或把单张、多张图片上传到当前分类。" />}
                     </> : !visibleGroups.length ? <WorkspaceState icon="assets" compact title={keyword ? "没有匹配的共享分类" : "还没有共享素材分类"} description="先创建一级分类或多级子分类，再上传单张、多张图片或 ZIP 系列包。" /> : null}
@@ -1040,6 +1091,17 @@ function SharedLibraryPanel({ onShowPersonal }: { onShowPersonal: () => void }) 
                 {activeBatch ? <div className="mx-1 mt-4 rounded-lg border border-border bg-background p-4"><div className="flex items-center justify-between gap-3"><strong>上传批次 {activeBatch.batch.id}</strong><div className="flex items-center gap-2">{["preparing", "uploading"].includes(activeBatch.batch.status) ? <Button size="small" loading={working} onClick={() => resumeInputRef.current?.click()}>选择原文件继续</Button> : null}<Tag color={activeBatch.batch.status.includes("error") || activeBatch.batch.status === "failed" ? "error" : "processing"}>{activeBatch.batch.status}</Tag></div></div><Progress className="mt-2" percent={Math.min(100, Math.round(100 * (activeBatch.batch.readyCount + activeBatch.batch.skippedCount + activeBatch.batch.failedCount) / Math.max(1, activeBatch.batch.fileCount)))} /><p className="text-xs text-foreground/55">就绪 {activeBatch.batch.readyCount} · 跳过 {activeBatch.batch.skippedCount} · 失败 {activeBatch.batch.failedCount}{activeBatch.batch.error ? ` · ${activeBatch.batch.error}` : ""}</p><input ref={resumeInputRef} hidden type="file" multiple={activeBatch.batch.mode === "files"} accept={activeBatch.batch.mode === "zip" ? ".zip,application/zip" : ".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"} onChange={(event) => void resumeUpload(Array.from(event.target.files || []))} /></div> : null}
             </div>
         </WorkspacePage>
+        <Modal title="移动图片" open={Boolean(movingAsset)} onCancel={() => { if (!working) setMovingAsset(null); }} onOk={() => void saveAssetMove()} okText="确认移动" confirmLoading={working} cancelButtonProps={{ disabled: working }} okButtonProps={{ disabled: !moveTargetId || moveTargetId === movingAsset?.seriesId || !manageableSeries.some((item) => item.id === moveTargetId) }} destroyOnHidden>
+            <div className="grid gap-3">
+                <p className="break-words text-sm">图片：{movingAsset?.title}</p>
+                <Typography.Text type="secondary">当前分类：{movingAsset ? sharedSeriesPath(series, movingAsset.seriesId).map((item) => item.name).join(" / ") : ""}</Typography.Text>
+                <label className="shared-series-form-field"><span>目标分类</span><SharedSeriesTreeSelect value={moveTargetId} treeData={moveTargetOptions} placeholder="搜索或选择目标分类" onChange={setMoveTargetId} /></label>
+                <Typography.Text type="secondary">{moveTargetOptions.length ? "移动后原分类不再显示这张图片，已有项目和画布引用保持不变。" : "暂无其他可管理的分类，请先新建目标分类。"}</Typography.Text>
+            </div>
+        </Modal>
+        <Modal title={`选择分类封面：${coverSeries?.name || ""}`} width={720} open={Boolean(coverSeries)} onCancel={() => { if (!working) setCoverSeries(null); }} onOk={() => { if (coverSeries) void saveSeriesCover(coverSeries, coverAssetId); }} okText="保存封面" confirmLoading={working} cancelButtonProps={{ disabled: working }} okButtonProps={{ disabled: !coverCandidates.some((asset) => asset.id === coverAssetId) }} destroyOnHidden>
+            {coverSeries ? <SharedSeriesCoverPicker key={coverSeries.id} candidates={coverCandidates} series={series} selectedId={coverAssetId} onSelect={setCoverAssetId} disabled={working} /> : null}
+        </Modal>
         <Modal title="上传共享素材" open={uploadOpen} onCancel={() => { if (!working) { setUploadOpen(false); setPendingFiles([]); setProgress(null); } }} onOk={() => void runUpload()} okText="开始上传" confirmLoading={working} okButtonProps={{ disabled: !analysis.valid || analysis.duplicate > 0 || analysis.unsupported > 0 || analysis.oversized > 0 || analysis.batchExceeded }} destroyOnHidden>
             <Segmented block value={uploadMode} options={[{ label: "单张 / 批量图片", value: "files" }, { label: "ZIP 系列包", value: "zip" }]} onChange={(value) => { setUploadMode(value as "files" | "zip"); setPendingFiles([]); }} />
             <Popover trigger={["hover", "click"]} placement="bottomLeft" content={<div className="shared-upload-policy-detail"><strong>完整上传说明</strong><p>{policy?.description || "正在读取上传策略…"}</p><p>普通批量默认 4 路并发（最高 6）；ZIP 仅在浏览器读取中央目录，完整解压由后台 Worker 流式执行。上传任务已持久化，关闭页面后仍会继续。</p></div>}>

@@ -600,6 +600,100 @@ func (s *Service) UpdateSharedAsset(user *model.User, id, title string) (*model.
 	return asset, nil
 }
 
+func (s *Service) MoveSharedAsset(user *model.User, id, targetSeriesID string) (*model.SharedAsset, error) {
+	if err := s.RequireSharedLibraryAccess(user); err != nil {
+		return nil, err
+	}
+	targetSeriesID = strings.TrimSpace(targetSeriesID)
+	if targetSeriesID == "" {
+		return nil, BadAuthRequest("请选择目标分类")
+	}
+	asset, err := s.repo.SharedAsset(id)
+	if err != nil || asset.Status != model.SharedAssetReady {
+		return nil, NotFound("共享素材不存在")
+	}
+	source, err := s.repo.SharedAssetSeries(asset.SeriesID)
+	if err != nil || source.Status != model.SharedAssetSeriesReady {
+		return nil, NotFound("原分类不存在或已归档")
+	}
+	if user.Role != model.UserRoleAdmin && source.OwnerUserID != user.ID {
+		return nil, Forbidden("只能移动自己分类中的共享素材")
+	}
+	target, err := s.repo.SharedAssetSeries(targetSeriesID)
+	if err != nil || target.Status != model.SharedAssetSeriesReady {
+		return nil, BadAuthRequest("请选择有效的目标分类")
+	}
+	if user.Role != model.UserRoleAdmin && target.OwnerUserID != user.ID {
+		return nil, Forbidden("只能移动到自己创建的共享分类")
+	}
+	if asset.SeriesID == target.ID {
+		return asset, nil
+	}
+	rows, err := s.repo.SharedAssetSeriesList()
+	if err != nil {
+		return nil, err
+	}
+	var clearCoverSeriesIDs []string
+	for _, row := range rows {
+		if row.CoverResourceID == asset.ResourceID && !sharedSeriesContains(rows, row.ID, target.ID) {
+			clearCoverSeriesIDs = append(clearCoverSeriesIDs, row.ID)
+		}
+	}
+	// 分类移动不改变图片内容或版本，项目、画布和生成任务的稳定引用继续有效。
+	if err := s.repo.MoveSharedAsset(asset, target.ID, clearCoverSeriesIDs); err != nil {
+		return nil, err
+	}
+	return s.repo.SharedAsset(asset.ID)
+}
+
+func (s *Service) SetSharedAssetSeriesCover(user *model.User, seriesID, assetID string) (*model.SharedAssetSeries, error) {
+	if err := s.RequireSharedLibraryAccess(user); err != nil {
+		return nil, err
+	}
+	series, err := s.repo.SharedAssetSeries(seriesID)
+	if err != nil || series.Status != model.SharedAssetSeriesReady {
+		return nil, NotFound("共享分类不存在或已归档")
+	}
+	if user.Role != model.UserRoleAdmin && series.OwnerUserID != user.ID {
+		return nil, Forbidden("只能设置自己分类的封面")
+	}
+	asset, err := s.repo.SharedAsset(strings.TrimSpace(assetID))
+	if err != nil || asset.Status != model.SharedAssetReady || !allowedSharedMime(asset.MimeType) || asset.ResourceID == "" {
+		return nil, BadAuthRequest("请选择有效的共享图片")
+	}
+	rows, err := s.repo.SharedAssetSeriesList()
+	if err != nil {
+		return nil, err
+	}
+	if !sharedSeriesContains(rows, series.ID, asset.SeriesID) {
+		return nil, BadAuthRequest("封面图片必须来自当前分类或其子分类")
+	}
+	if err := s.repo.SetSharedAssetSeriesCover(series.ID, asset.ResourceID); err != nil {
+		return nil, err
+	}
+	return s.repo.SharedAssetSeries(series.ID)
+}
+
+func sharedSeriesContains(rows []model.SharedAssetSeries, seriesID, childID string) bool {
+	byID := make(map[string]model.SharedAssetSeries, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	seen := make(map[string]bool)
+	for childID != "" && !seen[childID] {
+		seen[childID] = true
+		row, ok := byID[childID]
+		if !ok {
+			return false
+		}
+		if childID == seriesID {
+			return true
+		}
+		childID = row.ParentID
+	}
+	return false
+}
+
 func (s *Service) DeleteSharedAsset(user *model.User, id string) error {
 	if err := s.RequireSharedLibraryAccess(user); err != nil {
 		return err
@@ -616,7 +710,7 @@ func (s *Service) DeleteSharedAsset(user *model.User, id string) error {
 		return Forbidden("只能管理自己创建的共享素材")
 	}
 	asset.Status, asset.Version, asset.UpdatedAt = model.SharedAssetArchived, asset.Version+1, time.Now()
-	return s.repo.SaveSharedAsset(asset)
+	return s.repo.ArchiveSharedAsset(asset)
 }
 
 func (s *Service) DeleteProjectSharedAsset(user *model.User, projectID, sharedAssetID string) error {

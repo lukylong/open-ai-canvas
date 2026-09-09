@@ -40,6 +40,10 @@ description: 影策后端核心持久化表与状态边界
 | `shared_asset_upload_items` | 单文件上传、校验、跳过和失败明细 | `(batch_id, client_id)` 唯一；已完成项在续传和 Worker 恢复时跳过 |
 | `project_shared_asset_links` | 项目对共享素材版本的稳定引用 | 不复制到个人库，也不保存永久对象存储 URL；读取时重新校验当前账号权限 |
 
+单图移动复用 `shared_assets.series_id`，不修改图片 ID、Resource、版本或项目引用。`POST /api/shared-library/assets/:id/move` 接收 `{ seriesId }`，service 同时校验原分类与目标分类的就绪状态及管理权限；普通账号只能在自己的分类之间移动，管理员可跨创建者管理。图片移出所选封面的分类树时，在同一事务内清除失效的封面指向；仍在原父分类树内时保留父分类封面。
+
+封面复用既有 `shared_asset_series.cover_resource_id`，不新增结构迁移。`PUT /api/shared-library/series/:id/cover` 接收 `{ assetId }`，仅允许分类管理员选择当前分类或其活动子分类内已就绪的图片。服务端保存 Resource ID，前端匹配图片后仍通过带登录鉴权的共享缩略图接口读取，不暴露对象存储地址。未指定或图片已不属于该分类树时，按最早上传时间选取有效图片作为默认封面；归档图片同时清除对应封面。
+
 批次状态依次为 `preparing -> uploading -> queued -> extracting -> importing -> completed/completed_with_errors`，另有 `failed/cancelled`；文件项状态为 `pending/uploading/verifying/ready/skipped/failed`。ZIP Worker 使用数据库租约和心跳接管过期任务，每张有效图片独立提交，格式错误只跳过该文件，外部存储错误按退避策略重试。
 
 ## 技能包与版本

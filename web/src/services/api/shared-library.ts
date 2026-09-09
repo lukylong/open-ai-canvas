@@ -102,6 +102,8 @@ export function getSharedUploadBatch(id: string) { return request<SharedUploadBa
 export function cancelSharedUploadBatch(id: string) { return request<SharedUploadBatchDetail>(apiClient.post(`/shared-library/upload-batches/${encodeURIComponent(id)}/cancel`)); }
 export function updateSharedAsset(id: string, title: string) { return request<{ asset: SharedAsset }>(apiClient.patch(`/shared-library/assets/${encodeURIComponent(id)}`, { title })); }
 export function deleteSharedAsset(id: string) { return request<{ ok: true }>(apiClient.delete(`/shared-library/assets/${encodeURIComponent(id)}`)); }
+export function moveSharedAsset(id: string, seriesId: string) { return request<{ asset: SharedAsset }>(apiClient.post(`/shared-library/assets/${encodeURIComponent(id)}/move`, { seriesId })); }
+export function setSharedSeriesCover(id: string, assetId: string) { return request<{ series: SharedAssetSeries }>(apiClient.put(`/shared-library/series/${encodeURIComponent(id)}/cover`, { assetId })); }
 
 export function listRememberedSharedBatches() {
     const rows: RememberedSharedBatch[] = [];
