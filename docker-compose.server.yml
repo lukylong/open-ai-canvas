@@ -86,6 +86,8 @@ services:
   web:
     container_name: open-ai-canvas-web
     image: open-ai-canvas-web:server
+    volumes:
+      - web-static-assets:/var/lib/canvas-static
     build:
       context: .
       dockerfile: Dockerfile
@@ -95,3 +97,6 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  web-static-assets:

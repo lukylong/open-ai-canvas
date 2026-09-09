@@ -1,4 +1,6 @@
 .git
+.codex-transaction
+.codex-worktrees
 .idea
 .cursor
 .playwright-mcp

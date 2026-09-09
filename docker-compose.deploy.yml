@@ -74,6 +74,8 @@ services:
 
   web:
     image: ghcr.io/ddcat-ai/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}
+    volumes:
+      - web-static-assets:/var/lib/canvas-static
     ports:
       - "${CANVAS_HTTP_PORT:-3000}:3000"
     depends_on:
@@ -83,5 +85,6 @@ services:
 
 volumes:
   backend-data:
+  web-static-assets:
   postgres-data:
   redis-data:

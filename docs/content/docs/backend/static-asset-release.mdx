@@ -1,0 +1,24 @@
+---
+title: 前端静态资源与发布兼容
+description: 保留旧标签页依赖的哈希模块，避免更新后动态导入失败
+---
+
+# 前端静态资源与发布兼容
+
+Vite 的入口和路由模块使用内容哈希文件名。用户在发布前打开页面、发布后首次进入另一条路由时，浏览器仍会请求旧文件名。因此发布成功和首页 HTTP 200，不代表旧会话继续可用。
+
+## 镜像与缓存合同
+
+- `index.html` 及 SPA 页面返回 `Cache-Control: no-cache`，每次重新验证入口。
+- `/assets/` 哈希文件从 `/var/lib/canvas-static/assets` 读取，返回 immutable 缓存；缺失文件必须返回真实 404，不能用 HTML 替代 JS。
+- Nginx 镜像启动时执行 `scripts/preserve-web-assets.sh`，将本次构建的 assets 原子追加到共享目录，保留同名既有文件，不删除历史版本。
+- `docker-compose.local.yml`、`docker-compose.deploy.yml` 和 `docker-compose.server.yml` 将命名卷 `web-static-assets` 挂载到 `/var/lib/canvas-static`。自定义生产编排应采用相同挂载。
+- HTML 不写入资源卷，始终来自当前镜像。保留的内容仅为公开静态构建文件，不包含账号、Cookie 或业务数据。
+
+## 首次启用及回滚
+
+首次增加资源卷时，先把当前运行镜像及需要兼容的旧镜像内 `/usr/share/nginx/html/assets` 导入卷，再切换新镜像。只启用一个空卷会丢失更早的页面依赖。
+
+后续正常更新只追加新文件，不删除卷；`down -v` 会删除资源保留数据，不应作为更新步骤。资源卷需要纳入容量观察和迁移清单。清理旧版本前应结合客户端会话寿命及访问日志制定保留期，不按单次发布直接清空。
+
+回滚前端镜像时保留资源卷，避免新旧浏览器会话互相影响。部署验收应覆盖：旧入口引用的路由模块及依赖可加载、新页面正常、缺失 JS 返回 404、HTML 不使用 immutable 缓存，并检查后台任务服务未被前端更新重启。

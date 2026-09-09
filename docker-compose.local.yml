@@ -38,6 +38,8 @@ services:
 
   web:
     image: open-ai-canvas-web:local
+    volumes:
+      - web-static-assets:/var/lib/canvas-static
     build:
       context: .
       dockerfile: Dockerfile
@@ -66,3 +68,4 @@ services:
 
 volumes:
   backend-data:
+  web-static-assets:
