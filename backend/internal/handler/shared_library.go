@@ -81,6 +81,26 @@ func RegisterSharedLibraryRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"series": row})
 	})
+	r.PUT("/shared-library/series/:id/cover", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req struct {
+			AssetID string `json:"assetId" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		series, err := svc.SetSharedAssetSeriesCover(user, c.Param("id"), req.AssetID)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"series": series})
+	})
 	r.DELETE("/shared-library/series/:id", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -244,6 +264,26 @@ func RegisterSharedLibraryRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		asset, err := svc.UpdateSharedAsset(user, c.Param("id"), req.Title)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"asset": asset})
+	})
+	r.POST("/shared-library/assets/:id/move", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req struct {
+			SeriesID string `json:"seriesId" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		asset, err := svc.MoveSharedAsset(user, c.Param("id"), req.SeriesID)
 		if err != nil {
 			failService(c, err)
 			return
