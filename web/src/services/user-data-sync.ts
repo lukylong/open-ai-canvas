@@ -2,6 +2,7 @@ import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { deleteRemoteAsset, deleteRemoteCanvasProject, getRemoteUserDataSnapshot, upsertRemoteAsset, upsertRemoteCanvasProject } from "@/services/api/user-data";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { normalizeAssetRecords } from "@/lib/asset-storage-revision";
 import type { Asset } from "@/stores/use-asset-store";
 import { flushAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
@@ -37,11 +38,13 @@ export async function syncRemoteUserData(userId?: string | null) {
             const snapshot = await getRemoteUserDataSnapshot();
             // 登录时服务端是实体真相。浏览器 IndexedDB 只作为首屏缓存，不能把服务端已删除的记录补回去。
             // 这里只替换结构化记录，不在登录阶段解析图片/视频/音频 URL；媒体由实际使用方按需解析。
+            // Store 与已确认基线使用同一份归一化结果，避免历史记录被误判为新增或删除。
+            const snapshotAssets = normalizeAssetRecords(snapshot.assets);
             useCanvasStore.getState().replaceProjects(snapshot.projects);
-            useAssetStore.getState().replaceAssets(snapshot.assets);
+            useAssetStore.getState().replaceAssets(snapshotAssets);
             await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
             acknowledgedProjects = new Map(snapshot.projects.map((project) => [project.id, project]));
-            acknowledgedAssets = new Map(snapshot.assets.map((asset) => [asset.id, asset]));
+            acknowledgedAssets = new Map(snapshotAssets.map((asset) => [asset.id, asset]));
             remoteUserDataPhase = "ready";
         } catch (error) {
             remoteUserDataPhase = "failed";

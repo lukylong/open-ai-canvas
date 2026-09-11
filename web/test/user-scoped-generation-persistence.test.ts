@@ -4201,6 +4201,42 @@ test("canvas deletion removes the remote project before updating local state", a
     }
 });
 
+test("legacy snapshot normalization shares the acknowledged baseline without uploading or deleting records", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalGetItem = localforage.getItem;
+    const originalSetItem = localforage.setItem;
+    const previousAdapter = apiClient.defaults.adapter;
+    const previousAssets = useAssetStore.getState().assets;
+    const previousProjects = useCanvasStore.getState().projects;
+    const { tags: _tags, ...legacy } = storedAsset("legacy-snapshot", "历史素材");
+    legacy.data = { dataUrl: "/api/resources/fixture/file", storageKey: "resource:fixture", width: 1, height: 1, bytes: 1, mimeType: "image/png" } as typeof legacy.data;
+    const requests: string[] = [];
+    apiClient.defaults.adapter = async (config) => {
+        requests.push(`${config.method} ${config.url}`);
+        return { data: { code: 0, data: { projects: [], assets: [legacy, { ...legacy, id: "unknown-kind", kind: "unsupported" }] }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { setTimeout: () => 1, clearTimeout: () => undefined, localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined } } });
+    localforage.getItem = (async () => null) as typeof localforage.getItem;
+    localforage.setItem = (async (_key: string, value: string) => value) as typeof localforage.setItem;
+    try {
+        resetRemoteUserDataSync();
+        await syncRemoteUserData("account-legacy-baseline");
+        expect(useAssetStore.getState().assets).toHaveLength(1);
+        expect(useAssetStore.getState().assets[0].tags).toEqual([]);
+        await saveRemoteUserDataNow();
+        expect(requests).toEqual(["get /user-data/snapshot"]);
+    } finally {
+        resetRemoteUserDataSync();
+        useAssetStore.setState({ assets: previousAssets });
+        useCanvasStore.setState({ projects: previousProjects });
+        localforage.getItem = originalGetItem;
+        localforage.setItem = originalSetItem;
+        apiClient.defaults.adapter = previousAdapter;
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
 test("login replaces stale local entities instead of resurrecting remote deletions", async () => {
     const originalWindow = (globalThis as { window?: unknown }).window;
     const originalGetItem = localforage.getItem.bind(localforage);

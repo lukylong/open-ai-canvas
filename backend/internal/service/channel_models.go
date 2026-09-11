@@ -158,6 +158,7 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 	known := make(map[string]struct{}, len(existing))
 	for _, item := range existing {
 		known[channelModelCatalogKey(item.ModelKey)] = struct{}{}
+		known[channelModelCatalogKey(firstNonEmpty(item.ProviderModelKey, item.ModelKey))] = struct{}{}
 	}
 	retired := retiredChannelModelKeys(channel.RetiredModelsJSON)
 	missing := make([]model.ChannelModel, 0, len(models))
@@ -172,7 +173,8 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		if idErr != nil {
 			return nil, idErr
 		}
-		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
+		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, ProviderModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
+		known[key] = struct{}{}
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {

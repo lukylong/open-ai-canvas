@@ -158,8 +158,8 @@ export default function PluginsPage() {
         () => [
             ...protocolSectionMeta.map((section) => ({ ...section, plugins: filteredPlugins.filter((plugin) => providerCapabilitiesFor(plugin.manifest).includes(section.key)) })),
             { key: "other", label: "应用插件", description: "画布、素材与工作流扩展", icon: PlugZap, plugins: filteredPlugins.filter((plugin) => !providerCapabilitiesFor(plugin.manifest).length) },
-        ],
-        [filteredPlugins],
+        ].filter((section) => categoryFilter === "all" || section.key === categoryFilter),
+        [categoryFilter, filteredPlugins],
     );
 
     const selectCategory = (key: string) => {

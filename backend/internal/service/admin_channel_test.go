@@ -108,6 +108,43 @@ func TestRuntimeConcurrencyUsesEnvironmentFallback(t *testing.T) {
 	}
 }
 
+func TestFetchAdminChannelModelsDeduplicatesProviderAliases(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"provider-model"},{"id":"local-alias"},{"id":"new-model"}]}`))
+	}))
+	defer upstream.Close()
+	svc, db := newChannelModelTestService(t)
+	svc.runtimeCapabilities = RuntimeCapabilities{desktopLocalChannels: true}
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-alias", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: upstream.URL + "/v1", APIKey: "fixture-key", APIFormat: "openai", ModelsJSON: `[]`, AllowLocalChannel: true}
+	existing := model.ChannelModel{ID: "original-alias", ChannelID: channel.ID, ModelKey: "local-alias", ProviderModelKey: "provider-model", DisplayName: "已有自定义模型", Enabled: true, PriceConfigured: true, UnitPriceMicrocredits: 1234, BillingMode: "fixed_request", PriceVersion: 2}
+	for _, row := range []any{&channel, &existing} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for attempt, expectedAdded := range []int64{1, 0} {
+		result, err := svc.FetchAdminChannelModels(context.Background(), admin, channel.ID)
+		if err != nil || result.Added != expectedAdded {
+			t.Fatalf("attempt %d: result=%#v error=%v", attempt, result, err)
+		}
+	}
+	var original, added model.ChannelModel
+	if err := db.First(&original, "id = ?", existing.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if original.ProviderModelKey != existing.ProviderModelKey || original.UnitPriceMicrocredits != 1234 || !original.Enabled || original.PriceVersion != 2 {
+		t.Fatalf("existing custom mapping or price changed: %#v", original)
+	}
+	if err := db.First(&added, "channel_id = ? AND model_key = ?", channel.ID, "new-model").Error; err != nil {
+		t.Fatal(err)
+	}
+	if added.ProviderModelKey != "new-model" || added.Enabled || added.PriceConfigured {
+		t.Fatalf("new model identity/default activation is wrong: %#v", added)
+	}
+}
+
 func TestFetchAdminChannelModelsReaddsDeletedModel(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
