@@ -182,8 +182,8 @@ func (r *Repository) HasAPICallLogForTask(taskID string) (bool, error) {
 }
 
 func visibleAPICallLogQuery(query *gorm.DB) *gorm.DB {
-	// 视频轮询属于一次生成调用的内部阶段，管理端只展示聚合后的创建主记录。
-	return query.Where("NOT (api_call_logs.capability = ? AND api_call_logs.request_kind IN ?)", "video", []string{"poll", "download"})
+	// 隐藏内部轮询，但保留旧版本中 request_kind 为空的调用记录。
+	return query.Where("COALESCE(api_call_logs.request_kind, '') <> ?", "poll")
 }
 
 func (r *Repository) VideoAPICallRoot(log model.ApiCallLog) (*model.ApiCallLog, error) {

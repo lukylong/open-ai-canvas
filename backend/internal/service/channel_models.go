@@ -557,21 +557,27 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 		"video": "A static gray circle on a white background.",
 		"audio": "Model test.",
 	}[capability]
-	videoSeconds := "6"
-	videoSecondsValue := 6
-	if protocol == model.ChannelInterfaceVolcengineJiMengVideo {
-		videoSeconds = "5"
-		videoSecondsValue = 5
-	}
 	imageSize, imageQuality := "", ""
 	var imageProfile *ImageCapabilityConfig
-	if capability == "image" {
+	videoRatio, videoResolution, videoSecondsValue := videoTestDefaults(nil)
+	var videoProfile *VideoCapabilityConfig
+	switch capability {
+	case "image":
 		profile, normalizeErr := NormalizeModelCapabilityConfigForModel(capability, string(protocol), providerModelKey, req.CapabilityConfig)
 		if normalizeErr != nil {
 			return nil, normalizeErr
 		}
 		imageProfile = profile.Image
 		imageSize, imageQuality = imageTestDefaults(imageProfile)
+	case "video":
+		// 视频测试必须带上模型能力画像：声明式协议只按画像里的枚举回填分辨率名（如 480 -> 480p），
+		// 没有画像时会把裸数字发给上游，火山方舟等供应商会直接拒绝。
+		profile, normalizeErr := NormalizeModelCapabilityConfigForModel(capability, string(protocol), providerModelKey, req.CapabilityConfig)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		videoProfile = profile.Video
+		videoRatio, videoResolution, videoSecondsValue = videoTestDefaults(videoProfile)
 	}
 	input := canvasGenerationInput{
 		Mode:   capability,
@@ -587,11 +593,11 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 			Headers:            headers,
 			Model:              providerModelKey,
 			ChannelModelKey:    modelKey,
-			Size:               map[string]string{"image": imageSize, "video": "16:9"}[capability],
+			Size:               map[string]string{"image": imageSize, "video": videoRatio}[capability],
 			Quality:            imageQuality,
 			Count:              "1",
-			VideoSeconds:       videoSeconds,
-			VQuality:           "720",
+			VideoSeconds:       strconv.Itoa(videoSecondsValue),
+			VQuality:           videoResolution,
 			VideoGenerateAudio: "false",
 			VideoWatermark:     "false",
 			AudioVoice:         "alloy",
@@ -602,6 +608,9 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 	}
 	if capability == "image" {
 		input.ImageCapability = imageProfile
+	}
+	if capability == "video" {
+		input.VideoCapability = videoProfile
 	}
 
 	// 测试复用真实生成协议、运行时并发和熔断策略，但不创建用户任务或计费订单。
@@ -635,6 +644,32 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 }
 
 // 模型测试必须使用当前模型声明的默认参数，避免固定分辨率 SKU 被通用 1K 测试值误伤。
+// videoTestDefaults 从模型能力画像取测试参数，避免固定时长/分辨率误伤有效模型。
+func videoTestDefaults(profile *VideoCapabilityConfig) (string, string, int) {
+	if profile == nil {
+		return "16:9", "720", 6
+	}
+	ratio := strings.TrimSpace(profile.DefaultRatio)
+	if ratio == "" && len(profile.Ratios) > 0 {
+		ratio = strings.TrimSpace(profile.Ratios[0])
+	}
+	if ratio == "" {
+		ratio = "16:9"
+	}
+	resolution := strings.TrimSpace(profile.DefaultResolution)
+	if resolution == "" && len(profile.Resolutions) > 0 {
+		resolution = strings.TrimSpace(profile.Resolutions[0])
+	}
+	if resolution == "" {
+		resolution = "720"
+	}
+	seconds := profile.Duration.Default
+	if seconds <= 0 {
+		seconds = 6
+	}
+	return ratio, resolution, seconds
+}
+
 func imageTestDefaults(profile *ImageCapabilityConfig) (string, string) {
 	if profile == nil {
 		return "1024x1024", "auto"

@@ -22,6 +22,7 @@ import { navigateToSettings } from "@/lib/settings-navigation";
 import { cinematicAgentSessionOpsJson, createCinematicAgentSession, isAgentSessionPollingAbort, resumeCinematicAgentSession } from "@/lib/canvas/canvas-agent-session";
 import { summarizeCanvasContext } from "@/lib/canvas/canvas-context-summary";
 import { buildOrderedCanvasResourceReferences, canvasResourceMentionToken } from "@/lib/canvas/canvas-resource-references";
+import { compactCanvasToolResultData } from "@/lib/canvas/canvas-tool-result-sanitizer";
 import { AgentChatComposer, AgentChatMessage, AgentWorkingMessage, type CanvasAgentChatMessage, type CanvasAgentMode } from "./canvas-agent-chat-ui";
 import { VoiceRecordingButton } from "@/components/conversation/voice-recording-button";
 import { ModelLogo } from "@/components/model-logo";
@@ -950,7 +951,7 @@ export function CanvasAssistantPanel({
                         restoreLiveSnapshot: restoreCinematicSnapshot,
                         failProvider: (failure) => failCinematicSession(sessionId, cinematic.backendSessionId, failure),
                     });
-                    continuationResult = { ok: result.changed, message: result.changed ? summarizeCanvasAgentOps(cinematic.ops) || "后端影视 Agent 已写回画布。" : result.noopReason, data: result };
+                    continuationResult = { ok: result.changed, message: result.changed ? summarizeCanvasAgentOps(cinematic.ops) || "后端影视 Agent 已写回画布。" : result.noopReason, data: compactCanvasToolResultData(result) };
                 };
                 if (cinematic.continuationTask) {
                     await consumeGenerationTaskAgent(cinematic.continuationTask, cinematic.backendSessionId, applyContinuation, { signal: generationConsumerControllerRef.current.signal });
@@ -961,7 +962,7 @@ export function CanvasAssistantPanel({
             }
             const ops = onlineToolToOps(name, args, current, effectiveConfig);
             const result = await executeOps(ops, { source: "online", conversationId: sessionId, messageId: messageId || sessionId });
-            return { ok: result.ok, message: result.changed ? canvasAgentPostconditionMessage(result) : result.noopReason, data: result };
+            return { ok: result.ok, message: result.changed ? canvasAgentPostconditionMessage(result) : result.noopReason, data: compactCanvasToolResultData(result) };
         } catch (error) {
             if (isAgentSessionPollingAbort(error)) throw error;
             return { ok: false, message: error instanceof Error ? error.message : "工具执行失败" };

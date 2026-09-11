@@ -3,6 +3,7 @@ import { getImageBlob } from "@/services/image-storage";
 import { deleteRemoteAsset, deleteRemoteCanvasProject, getRemoteUserDataSnapshot, upsertRemoteAsset, upsertRemoteCanvasProject } from "@/services/api/user-data";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { normalizeAssetRecords } from "@/lib/asset-storage-revision";
+import { sanitizeCanvasProjectForRemoteSync } from "@/lib/canvas/canvas-tool-result-sanitizer";
 import type { Asset } from "@/stores/use-asset-store";
 import { flushAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
@@ -182,7 +183,8 @@ async function saveRemoteUserDataBatch() {
     // 转换后的 resource: 引用只属于发往服务端的 payload，不能反写整份实时 store。
     // 已确认快照记录的是本次上传所依据的本地实体；上传期间的新编辑会在下一轮继续提交。
     for (const source of dirtyProjects) {
-        const remotePayload = await ensureRemoteResourceReferences(source, uploaded);
+        // Drop redundant historical snapshots before recursively resolving their media references.
+        const remotePayload = await ensureRemoteResourceReferences(sanitizeCanvasProjectForRemoteSync(source), uploaded);
         await upsertRemoteCanvasProject(remotePayload);
         acknowledgedProjects.set(source.id, source);
     }

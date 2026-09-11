@@ -112,3 +112,43 @@ func TestQueryAPICallLogsSearchesFailureFields(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryAPICallLogsHidesInternalPollStages(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:api-log-visible-stages?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.ApiCallLog{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	logs := []model.ApiCallLog{
+		{ID: "image-create", UserID: "user-1", Capability: "image", RequestKind: "create", CreatedAt: now},
+		{ID: "image-poll", UserID: "user-1", Capability: "image", RequestKind: "poll", CreatedAt: now.Add(time.Second)},
+		{ID: "image-download", UserID: "user-1", Capability: "image", RequestKind: "download", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "video-create", UserID: "user-1", Capability: "video", RequestKind: "create", CreatedAt: now.Add(3 * time.Second)},
+		{ID: "video-poll", UserID: "user-1", Capability: "video", RequestKind: "poll", CreatedAt: now.Add(4 * time.Second)},
+		{ID: "legacy-unknown", UserID: "user-1", Capability: "image", CreatedAt: now.Add(5 * time.Second)},
+	}
+	if err := db.Create(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.ApiCallLog{}).Where("id = ?", "legacy-unknown").Update("request_kind", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	items, total, err := New(db).QueryAPICallLogs(APICallLogFilter{
+		AnalyticsFilter: AnalyticsFilter{From: now.Add(-time.Hour), To: now.Add(time.Hour)},
+		Page:            1,
+		Limit:           20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 || len(items) != 4 {
+		t.Fatalf("visible logs = total:%d items:%#v, want create and download logs without polls", total, items)
+	}
+	if items[0].ID != "legacy-unknown" || items[1].ID != "video-create" || items[2].ID != "image-download" || items[3].ID != "image-create" {
+		t.Fatalf("visible logs = %#v, want legacy-unknown, video-create, image-download, image-create", items)
+	}
+}

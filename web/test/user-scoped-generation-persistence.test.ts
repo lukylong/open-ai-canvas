@@ -4237,6 +4237,48 @@ test("legacy snapshot normalization shares the acknowledged baseline without upl
     }
 });
 
+test("canvas sync removes oversized tool snapshots without uploading their media or mutating local history", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalGetItem = localforage.getItem;
+    const originalSetItem = localforage.setItem;
+    const previousAdapter = apiClient.defaults.adapter;
+    const previousAssets = useAssetStore.getState().assets;
+    const previousProjects = useCanvasStore.getState().projects;
+    const snapshot = { nodes: [{ id: "old-node", metadata: { content: "x".repeat(5 * 1024 * 1024), storageKey: "image:historical-only" } }], connections: [] };
+    const project = {
+        ...storedCanvasProject("compact-project", "画布"),
+        chatSessions: [{ id: "session", title: "历史", mode: "online", messages: [{ id: "tool", role: "tool", detail: { results: [{ name: "canvas_add_node", result: { ok: true, data: { snapshot, before: snapshot, after: snapshot, changed: true } } }] } }] }],
+    } as CanvasProject;
+    const calls: Array<{ method: string; url: string; data: string }> = [];
+    apiClient.defaults.adapter = async (config) => {
+        calls.push({ method: config.method || "get", url: String(config.url), data: String(config.data || "") });
+        return { data: { code: 0, data: { projects: [], assets: [] }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { setTimeout: () => 1, clearTimeout: () => undefined, localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined } } });
+    localforage.getItem = (async () => null) as typeof localforage.getItem;
+    localforage.setItem = (async (_key: string, value: string) => value) as typeof localforage.setItem;
+    try {
+        resetRemoteUserDataSync();
+        await syncRemoteUserData("compact-user");
+        useCanvasStore.setState({ projects: [project] });
+        await saveRemoteUserDataNow();
+        await saveRemoteUserDataNow();
+        expect(calls.map(({ method, url }) => `${method} ${url}`)).toEqual(["get /user-data/snapshot", "put /canvas-projects/compact-project"]);
+        expect(calls[1].data.length).toBeLessThan(4096);
+        expect(calls[1].data).not.toContain("historical-only");
+        expect(project.chatSessions?.[0].messages[0].detail).toHaveProperty("results.0.result.data.snapshot", snapshot);
+    } finally {
+        resetRemoteUserDataSync();
+        useAssetStore.setState({ assets: previousAssets });
+        useCanvasStore.setState({ projects: previousProjects });
+        localforage.getItem = originalGetItem;
+        localforage.setItem = originalSetItem;
+        apiClient.defaults.adapter = previousAdapter;
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
 test("login replaces stale local entities instead of resurrecting remote deletions", async () => {
     const originalWindow = (globalThis as { window?: unknown }).window;
     const originalGetItem = localforage.getItem.bind(localforage);

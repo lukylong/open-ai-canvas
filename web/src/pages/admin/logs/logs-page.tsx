@@ -125,7 +125,7 @@ export default function LogsPage() {
     return (
         <AdminPageFrame
             title="请求明细"
-            description="上游调用与积分计费"
+            description="模型生成与结果下载记录；仅计费调用扣除积分"
             actions={
                 <AdminExportButton
                     exportFile={() => exportAdminApiLogs({ keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status })}
