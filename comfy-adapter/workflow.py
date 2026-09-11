@@ -12,6 +12,7 @@ from typing import Any
 
 
 WORKFLOW_DIR = Path(__file__).resolve().parent / "workflows"
+MAX_VIDEO_DURATION_SECONDS = 15
 CAPABILITY_BY_MODE = {"t2i": "image", "i2i": "image", "text": "video", "image": "video"}
 VISIBLE_TEXT_CONFLICTS = {
     "text", "words", "readable words", "readable text", "letters", "digits", "numbers",
@@ -121,7 +122,7 @@ def public_model(spec: WorkflowSpec) -> dict[str, Any]:
     if spec.capability == "video":
         item["default_parameters"].update({"duration_seconds": "5", "resolution": "720p"})
         item["options"].update({
-            "duration_seconds": [{"value": str(value), "label": f"{value} 秒"} for value in range(1, 31)],
+            "duration_seconds": [{"value": str(value), "label": f"{value} 秒"} for value in range(1, MAX_VIDEO_DURATION_SECONDS + 1)],
             "resolution": [{"value": value, "label": value.upper()} for value in ("480p", "720p", "1080p")],
         })
     return item
@@ -233,6 +234,10 @@ def _h3_audio_prompt(prompt: str, duration: float) -> str:
 
 
 def compile_workflow(spec: WorkflowSpec, request: dict[str, Any], uploaded_images: list[str], job_id: str) -> dict[str, Any]:
+    if spec.capability == "video":
+        duration = float(request.get("duration") if request.get("duration") is not None else 5)
+        if not math.isfinite(duration) or duration <= 0 or duration > MAX_VIDEO_DURATION_SECONDS:
+            raise ValueError("视频时长必须大于 0 且最多 15 秒")
     workflow = copy.deepcopy(json.loads(spec.path.read_text(encoding="utf-8")))
     prompt = str(request.get("prompt") or "").strip()
     if not prompt:

@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from workflow import compile_workflow, load_registry, public_model, public_workflow
+from workflow import MAX_VIDEO_DURATION_SECONDS, compile_workflow, load_registry, public_model, public_workflow
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class JobRequest(BaseModel):
     input_images: list[str] = Field(default_factory=list, max_length=9)
     width: int | None = Field(default=None, ge=64, le=8192)
     height: int | None = Field(default=None, ge=64, le=8192)
-    duration: float | None = Field(default=None, gt=0, le=60)
+    duration: float | None = Field(default=None, gt=0, le=MAX_VIDEO_DURATION_SECONDS)
     generate_audio: bool | None = None
     seed: int | None = Field(default=None, ge=0)
     batch_size: int = Field(default=1, ge=1, le=4)
@@ -313,7 +313,16 @@ async def get_job(job_id: str) -> dict[str, Any]:
         status = "failed"
     else:
         status = "running"
-    return {"id": job_id, "promptId": prompt_id, "providerId": provider.id, "status": status, "outputs": outputs, "error": "ComfyUI execution failed" if status == "failed" else ""}
+    error = "ComfyUI execution failed" if status == "failed" else ""
+    if status == "failed":
+        for event in status_payload.get("messages") or []:
+            if not isinstance(event, (list, tuple)) or len(event) < 2 or event[0] != "execution_error" or not isinstance(event[1], dict):
+                continue
+            # 只映射已识别的内核错误，不向用户返回节点输入、提示词或 traceback。
+            if "tensor strides exceed int32 range" in str(event[1].get("exception_message") or ""):
+                error = "当前时长与分辨率组合超出采样内核范围，请缩短时长后重试（最多 15 秒）"
+                break
+    return {"id": job_id, "promptId": prompt_id, "providerId": provider.id, "status": status, "outputs": outputs, "error": error}
 
 
 @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(require_token)])
