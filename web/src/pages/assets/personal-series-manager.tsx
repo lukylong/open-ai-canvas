@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { Alert, App, Button, Drawer, Input, Modal, Pagination, Popconfirm, Space, Table, TreeSelect, Typography } from "antd";
-import { FolderInput, Image, PencilLine, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, FolderInput, FolderOpen, Image, PencilLine, Plus, Trash2 } from "lucide-react";
 import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { buildSharedSeriesTree, flattenSharedSeriesTree, sharedSeriesDescendantIds } from "@/lib/shared-series-tree";
 import { deletePersonalSeries, movePersonalAssets, savePersonalSeries, setPersonalSeriesCover, type PersonalSeries, type PersonalSeriesState } from "@/services/api/personal-series";
 import type { Asset } from "@/stores/use-asset-store";
+import { personalSeriesMembers, personalSeriesMemberships } from "@/lib/personal-series-library";
 
 type Props = {
     state: PersonalSeriesState;
@@ -13,9 +14,11 @@ type Props = {
     initialSeriesId?: string;
     onClose: () => void;
     onChanged: () => Promise<unknown>;
+    onCreateAsset: (seriesId: string) => void;
+    onEditAsset: (asset: Asset) => void;
 };
 
-export function PersonalSeriesManager({ state, assets, selectedIds, initialSeriesId = "all", onClose, onChanged }: Props) {
+export function PersonalSeriesManager({ state, assets, selectedIds, initialSeriesId = "", onClose, onChanged, onCreateAsset, onEditAsset }: Props) {
     const { message } = App.useApp();
     const [currentId, setCurrentId] = useState(initialSeriesId);
     const [selected, setSelected] = useState(selectedIds);
@@ -31,9 +34,14 @@ export function PersonalSeriesManager({ state, assets, selectedIds, initialSerie
     const current = state.series.find((series) => series.id === currentId);
     const tree = useMemo(() => buildSharedSeriesTree(state.series), [state.series]);
     const paths = useMemo(() => new Map(flattenSharedSeriesTree(state.series).map(({ item, path }) => [item.id, path])), [state.series]);
-    const members = useMemo(() => new Map(state.memberships.map((member) => [member.assetId, member.seriesId])), [state.memberships]);
+    const members = useMemo(() => personalSeriesMemberships(state), [state]);
     const branch = useMemo(() => new Set([currentId, ...sharedSeriesDescendantIds(state.series, currentId)]), [state.series, currentId]);
-    const filtered = assets.filter((asset) => (currentId === "all" || (currentId === "unassigned" ? !members.get(asset.id) : branch.has(members.get(asset.id) || ""))) && asset.title.toLowerCase().includes(keyword.trim().toLowerCase()));
+    const scopeAssets = useMemo(() => personalSeriesMembers(assets, state, currentId), [assets, state, currentId]);
+    const scopeIds = new Set(scopeAssets.map((asset) => asset.id));
+    const scopedSelected = selected.filter((id) => scopeIds.has(id));
+    const filtered = scopeAssets.filter((asset) => asset.title.toLowerCase().includes(keyword.trim().toLowerCase()));
+    const children = state.series.filter((series) => (series.parentId || "") === currentId);
+    const navigateSeries = (id: string) => { setCurrentId(id); setSelected([]); setDestination(undefined); setKeyword(""); setPage(1); };
     const parentTree = useMemo(() => {
         const excluded = editor?.id ? new Set([editor.id, ...sharedSeriesDescendantIds(state.series, editor.id)]) : new Set<string>();
         return buildSharedSeriesTree(state.series, new Set(state.series.filter((series) => !excluded.has(series.id)).map((series) => series.id)));
@@ -56,36 +64,38 @@ export function PersonalSeriesManager({ state, assets, selectedIds, initialSerie
     };
     const treeProps = { showSearch: true, treeNodeFilterProp: "searchText", treeNodeLabelProp: "label", treeDefaultExpandAll: true, disabled: working };
 
-    return <Drawer title="我的素材 · 系列管理" open width="min(1100px, 100vw)" onClose={() => { if (!working) onClose(); }} closable={!working}>
+    return <Drawer title={current ? `管理系列 · ${current.name}` : "系列与未归组素材"} open width="min(1100px, 100vw)" onClose={() => { if (!working) onClose(); }} closable={!working}>
         <div className="grid gap-4">
-            <Alert type="info" showIcon message="只整理素材，不复制或删除原图" description="系列支持最多 8 级。移出系列后恢复按原生成任务归组；整理不会自动同步到素材分发平台。" />
+            <Typography.Text type="secondary">{current ? "这里只显示当前系列的直属素材；子系列请点击下方入口单独管理。" : "已归组素材只在所属系列内显示。未归组素材可在这里移入系列。"}整理不会自动同步分发。</Typography.Text>
+            <Space wrap aria-label="系列导航"><Button type="text" disabled={working} onClick={() => navigateSeries("")}>系列总览</Button>{current ? <><ChevronRight className="size-4" /><Button type="text" disabled={working} onClick={() => navigateSeries(current.parentId || "")}>返回上一级</Button><Typography.Text strong>{paths.get(current.id)}</Typography.Text></> : null}</Space>
             <Space wrap>
-                <TreeSelect {...treeProps} aria-label="选择管理系列" className="w-72" value={currentId} treeData={[{ value: "all", title: "全部素材", label: "全部素材" }, { value: "unassigned", title: "未整理（自动归组）", label: "未整理（自动归组）" }, ...tree]} onChange={(value) => { setCurrentId(value); setPage(1); setSelected([]); }} />
+                <Button type="primary" icon={<Plus className="size-4" />} disabled={working} onClick={() => onCreateAsset(currentId)}>新增素材</Button>
                 <Button icon={<Plus className="size-4" />} disabled={working} onClick={() => setEditor({ id: "", name: "", parentId: current?.id || "" })}>{current ? "新建子系列" : "新建系列"}</Button>
                 {current ? <>
                     <Button icon={<PencilLine className="size-4" />} disabled={working} onClick={() => setEditor({ id: current.id, name: current.name, parentId: current.parentId })}>重命名 / 移动系列</Button>
                     <Button icon={<Image className="size-4" />} disabled={working} onClick={() => { setCoverSeries(current); setCoverId(current.coverAssetId); setCoverSearch(""); setCoverPage(1); }}>选择封面</Button>
-                    <Popconfirm title="删除此系列？" description="仅删除分组，素材恢复自动归组，不删除原图。有子系列时须先移动子系列。" onConfirm={() => mutate(() => deletePersonalSeries(current.id), "系列已删除，原素材保留", () => { setCurrentId("all"); setSelected([]); })}>
+                    <Popconfirm title="删除此系列？" description="仅删除分组，素材恢复自动归组，不删除原图。有子系列时须先移动子系列。" onConfirm={() => mutate(() => deletePersonalSeries(current.id), "系列已删除，原素材保留", () => navigateSeries(current.parentId || ""))}>
                         <Button danger disabled={working} icon={<Trash2 className="size-4" />}>删除系列</Button>
                     </Popconfirm>
                 </> : null}
             </Space>
-            <Typography.Text type="secondary">{current ? paths.get(current.id) : "全部个人素材"} · {filtered.length} 个素材（包含子系列）</Typography.Text>
+            {children.length ? <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3" aria-label={current ? "子系列" : "系列入口"}>{children.map((series) => <Button key={series.id} icon={<FolderOpen className="size-4" />} disabled={working} onClick={() => navigateSeries(series.id)}>{series.name}<ChevronRight className="size-4" /></Button>)}</div> : null}
+            <Typography.Text type="secondary">{current ? "当前系列的直属素材" : "未归组素材"} · {filtered.length} 个</Typography.Text>
             {current ? <div className="flex items-center gap-3"><div className="h-24 w-24 overflow-hidden rounded"><AssetMediaPreview asset={assets.find((asset) => asset.id === current.coverAssetId && branch.has(members.get(asset.id) || "")) || [...filtered].filter((asset) => asset.kind === "image").sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))[0]} alt={`${current.name} 封面`} className="h-full w-full object-contain" fallback={<span>暂无封面</span>} /></div><Typography.Text>{current.name}</Typography.Text></div> : null}
-            {selected.length > 1000 ? <Alert type="warning" message="单次最多整理 1000 个素材，请减少选择后再移动。" /> : null}
+            {scopedSelected.length > 1000 ? <Alert type="warning" message="单次最多整理 1000 个素材，请减少选择后再移动。" /> : null}
             <Input allowClear aria-label="搜索系列素材" placeholder="搜索素材名称" value={keyword} onChange={(event) => { setKeyword(event.target.value); setPage(1); }} />
-            <Space wrap>
-                <Typography.Text>已选择 {selected.length} 个</Typography.Text>
+            {scopedSelected.length ? <Space wrap>
+                <Typography.Text>已选择 {scopedSelected.length} 个</Typography.Text>
                 <TreeSelect {...treeProps} aria-label="移动到系列" className="w-72" placeholder="选择目标系列" value={destination} treeData={tree} onChange={setDestination} />
-                <Button icon={<FolderInput className="size-4" />} disabled={!selected.length || !destination || selected.length > 1000 || working} loading={working} onClick={() => void mutate(() => movePersonalAssets(selected, destination!), "素材已移入系列", () => setSelected([]))}>移入系列</Button>
-                <Button disabled={!selected.length || selected.length > 1000 || working} onClick={() => void mutate(() => movePersonalAssets(selected, ""), "已移出系列，恢复自动归组", () => setSelected([]))}>移出系列</Button>
+                <Button icon={<FolderInput className="size-4" />} disabled={!destination || scopedSelected.length > 1000 || working} loading={working} onClick={() => void mutate(() => movePersonalAssets(scopedSelected, destination!), "素材已移入系列", () => setSelected([]))}>确认移动</Button>
+                {current ? <Button disabled={scopedSelected.length > 1000 || working} onClick={() => void mutate(() => movePersonalAssets(scopedSelected, ""), "已移出系列，恢复自动归组", () => setSelected([]))}>移出系列</Button> : null}
                 <Button disabled={working || !filtered.length} onClick={() => setSelected(filtered.slice(0, 1000).map((asset) => asset.id))}>选择筛选结果（最多 1000）</Button>
-                <Button disabled={working || !selected.length} onClick={() => setSelected([])}>取消选择</Button>
-            </Space>
-            <Table<Asset> rowKey="id" size="small" dataSource={filtered} scroll={{ x: 600 }} rowSelection={{ selectedRowKeys: selected, preserveSelectedRowKeys: true, onChange: (keys) => setSelected(keys.map(String)), getCheckboxProps: () => ({ disabled: working }) }} pagination={{ current: Math.min(page, Math.max(1, Math.ceil(filtered.length / 24))), pageSize: 24, showSizeChanger: false, onChange: setPage }} columns={[
+                <Button disabled={working} onClick={() => setSelected([])}>取消选择</Button>
+            </Space> : null}
+            <Table<Asset> rowKey="id" size="small" dataSource={filtered} scroll={{ x: 600 }} rowSelection={{ selectedRowKeys: scopedSelected, preserveSelectedRowKeys: true, onChange: (keys) => setSelected(keys.map(String).filter((id) => scopeIds.has(id))), getCheckboxProps: () => ({ disabled: working }) }} pagination={{ current: Math.min(page, Math.max(1, Math.ceil(filtered.length / 24))), pageSize: 24, showSizeChanger: false, onChange: setPage }} columns={[
                 { title: "素材", key: "asset", render: (_, asset) => <div className="flex items-center gap-3"><div className="h-12 w-12 shrink-0 overflow-hidden rounded"><AssetMediaPreview asset={asset} alt={asset.title} className="h-full w-full object-contain" fallback={<span>{asset.kind}</span>} /></div><span>{asset.title}</span></div> },
-                { title: "所属系列", key: "series", render: (_, asset) => paths.get(members.get(asset.id) || "") || "自动归组" },
-            ]} locale={{ emptyText: "此系列暂无素材，可从全部素材中选择并移入" }} />
+                { title: "操作", key: "edit", render: (_, asset) => asset.kind === "image" || asset.kind === "text" ? <Button type="text" icon={<PencilLine className="size-4" />} disabled={working} onClick={() => onEditAsset(asset)}>编辑素材</Button> : <Typography.Text type="secondary">勾选后可移动系列</Typography.Text> },
+            ]} locale={{ emptyText: current ? "当前系列暂无直属素材，可在这里新增，或从未归组素材中移入" : "暂无未归组素材，请进入上方系列管理，或新增素材" }} />
         </div>
         <Modal title={editor?.id ? "重命名或移动系列" : "新建系列"} open={Boolean(editor)} confirmLoading={working} okButtonProps={{ disabled: !editor?.name.trim() }} onCancel={() => { if (!working) setEditor(null); }} onOk={() => editor && void mutate(() => savePersonalSeries(editor.id, editor.name, editor.parentId), "系列已保存", () => setEditor(null))}>
             <div className="grid gap-4">

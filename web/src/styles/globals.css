@@ -13614,7 +13614,11 @@ html:not(.dark) .creation-history-drawer-root {
 .library-modal .ant-modal-close { top: 23px; right: 24px; width: 34px; height: 34px; border-radius: var(--r-full); color: color-mix(in srgb, var(--foreground) 42%, transparent); }
 .library-modal .ant-modal-close:hover { background: color-mix(in srgb, var(--foreground) 8%, transparent); color: var(--foreground); }
 .library-modal .ant-form-item-label > label { color: color-mix(in srgb, var(--foreground) 68%, transparent); font-size: var(--fs-caption); font-weight: 560; }
-.library-modal :where(.ant-input, .ant-input-affix-wrapper, .ant-select-selector, .ant-input-number, .ant-picker) { min-height: 42px; border-color: color-mix(in srgb, var(--foreground) 15%, transparent) !important; border-radius: var(--r-md) !important; background: color-mix(in srgb, var(--foreground) 3%, transparent) !important; box-shadow: none !important; }
+.library-modal { --library-form-control-height: 42px; }
+.library-modal :where(.ant-input, .ant-input-affix-wrapper, .ant-select-selector, .ant-input-number, .ant-picker) { min-height: var(--library-form-control-height); border-color: color-mix(in srgb, var(--foreground) 15%, transparent) !important; border-radius: var(--r-md) !important; background: color-mix(in srgb, var(--foreground) 3%, transparent) !important; box-shadow: none !important; }
+.library-modal .asset-cover-upload { display: flex; align-items: stretch; gap: var(--space-2); }
+.library-modal .asset-cover-upload > .ant-input { flex: 1; min-width: 0; }
+.library-modal .asset-cover-upload > .ant-btn { height: auto; min-height: var(--library-form-control-height); align-self: stretch; flex-shrink: 0; }
 .library-modal .ant-input-affix-wrapper .ant-input { min-height: 34px; background: transparent !important; }
 .library-modal :where(.ant-input:hover, .ant-input-affix-wrapper:hover, .ant-select-selector:hover) { border-color: color-mix(in srgb, var(--foreground) 26%, transparent) !important; }
 /* 聚焦态：--workspace-accent 暗色下是 #f5f5f5，直接描边会形成刺眼白圈，降到半透明。 */
