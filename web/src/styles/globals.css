@@ -13619,6 +13619,10 @@ html:not(.dark) .creation-history-drawer-root {
 .library-modal .asset-cover-upload { display: flex; align-items: stretch; gap: var(--space-2); }
 .library-modal .asset-cover-upload > .ant-input { flex: 1; min-width: 0; }
 .library-modal .asset-cover-upload > .ant-btn { height: auto; min-height: var(--library-form-control-height); align-self: stretch; flex-shrink: 0; }
+.library-modal.asset-editor-modal { top: var(--space-6); padding-bottom: 0; }
+.library-modal.asset-editor-modal .ant-modal-container { display: flex; flex-direction: column; max-height: calc(100dvh - var(--space-6) - var(--space-6)); }
+.library-modal.asset-editor-modal .ant-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.library-modal.asset-editor-modal :where(.ant-modal-header, .ant-modal-footer) { flex-shrink: 0; }
 .library-modal .ant-input-affix-wrapper .ant-input { min-height: 34px; background: transparent !important; }
 .library-modal :where(.ant-input:hover, .ant-input-affix-wrapper:hover, .ant-select-selector:hover) { border-color: color-mix(in srgb, var(--foreground) 26%, transparent) !important; }
 /* 聚焦态：--workspace-accent 暗色下是 #f5f5f5，直接描边会形成刺眼白圈，降到半透明。 */
