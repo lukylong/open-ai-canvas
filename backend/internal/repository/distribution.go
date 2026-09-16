@@ -61,7 +61,7 @@ func (r *Repository) RetryDistributionPublication(userID string, id string, now 
 		if err := tx.Model(&publication).Updates(map[string]any{"status": model.DistributionPublicationPending, "last_error": "", "updated_at": now}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&model.DistributionOutbox{}).Where("publication_id = ?", publication.ID).Updates(map[string]any{"status": model.DistributionOutboxPending, "next_attempt_at": &now, "last_error": "", "updated_at": now}).Error
+		return tx.Model(&model.DistributionOutbox{}).Where("publication_id = ?", publication.ID).Updates(map[string]any{"status": model.DistributionOutboxPending, "attempts": 0, "next_attempt_at": &now, "last_error": "", "updated_at": now}).Error
 	})
 	if err == nil {
 		err = r.db.First(&publication, "id = ?", id).Error
@@ -95,7 +95,8 @@ func (r *Repository) ClaimDistributionOutbox(now time.Time) (*model.Distribution
 		staleBefore := now.Add(-2 * time.Minute)
 		eligible := "(status IN ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (status = ? AND updated_at <= ?)"
 		states := []model.DistributionOutboxStatus{model.DistributionOutboxPending, model.DistributionOutboxFailed}
-		query := tx.Where(eligible, states, now, model.DistributionOutboxProcessing, staleBefore).Order("created_at").Limit(1)
+		pendingPublications := tx.Model(&model.DistributionPublication{}).Select("id").Where("status = ?", model.DistributionPublicationPending)
+		query := tx.Where("publication_id IN (?)", pendingPublications).Where(eligible, states, now, model.DistributionOutboxProcessing, staleBefore).Order("created_at").Limit(1)
 		if r.Dialect() == "postgres" {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
 		}
@@ -106,7 +107,7 @@ func (r *Repository) ClaimDistributionOutbox(now time.Time) (*model.Distribution
 		if result.RowsAffected == 0 {
 			return gorm.ErrRecordNotFound
 		}
-		updated := tx.Model(&model.DistributionOutbox{}).Where("id = ? AND ("+eligible+")", item.ID, states, now, model.DistributionOutboxProcessing, staleBefore).Updates(map[string]any{"status": model.DistributionOutboxProcessing, "attempts": gorm.Expr("attempts + 1"), "updated_at": now})
+		updated := tx.Model(&model.DistributionOutbox{}).Where("publication_id IN (?)", pendingPublications).Where("id = ? AND ("+eligible+")", item.ID, states, now, model.DistributionOutboxProcessing, staleBefore).Updates(map[string]any{"status": model.DistributionOutboxProcessing, "attempts": gorm.Expr("attempts + 1"), "updated_at": now})
 		if updated.Error != nil {
 			return updated.Error
 		}
@@ -133,8 +134,13 @@ func (r *Repository) FailDistributionOutbox(itemID string, publicationID string,
 		publicationStatus := model.DistributionPublicationPending
 		if terminal {
 			publicationStatus = model.DistributionPublicationFailed
+			outboxStatus = model.DistributionOutboxStopped
 		}
-		if err := tx.Model(&model.DistributionOutbox{}).Where("id = ?", itemID).Updates(map[string]any{"status": outboxStatus, "last_error": message, "next_attempt_at": &retryAt, "updated_at": time.Now()}).Error; err != nil {
+		var nextAttempt *time.Time
+		if !terminal {
+			nextAttempt = &retryAt
+		}
+		if err := tx.Model(&model.DistributionOutbox{}).Where("id = ?", itemID).Updates(map[string]any{"status": outboxStatus, "last_error": message, "next_attempt_at": nextAttempt, "updated_at": time.Now()}).Error; err != nil {
 			return err
 		}
 		return tx.Model(&model.DistributionPublication{}).Where("id = ?", publicationID).Updates(map[string]any{"status": publicationStatus, "last_error": message, "updated_at": time.Now()}).Error

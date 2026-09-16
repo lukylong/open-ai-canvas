@@ -26,6 +26,7 @@ const (
 	DistributionOutboxProcessing DistributionOutboxStatus = "processing"
 	DistributionOutboxDelivered  DistributionOutboxStatus = "delivered"
 	DistributionOutboxFailed     DistributionOutboxStatus = "failed"
+	DistributionOutboxStopped    DistributionOutboxStatus = "stopped"
 )
 
 type MigrationRun struct {

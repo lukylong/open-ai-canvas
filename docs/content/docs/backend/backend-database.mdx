@@ -5,6 +5,13 @@ description: 影策后端核心持久化表与状态边界
 
 # 后端数据库
 
+## 个人系列（schema v8）
+
+- `personal_asset_series`：`id`、`user_id`、`name`、`parent_id`、`cover_asset_id` 与创建/更新时间；独立存储个人素材的分组和封面。
+- `personal_asset_memberships`：以 `asset_id` 为主键，记录 `user_id`、`series_id`、`updated_at`。一个素材最多属于一个手动系列，空 `series_id` 保留移出时间，防止后续显式分发复用移出前的版本。
+- v7 升级只新增这两张表，不重写 `assets`、`resources` 或生成任务的历史数据。手动管理在账号锁保护的事务内执行，校验所有素材、父系列、封面的归属、环路和 8 级深度；移动成员与失效封面清理一并回滚。
+- 删除系列保留原素材、原始版本、文件和画布引用；包含子系列时拒绝删除。已删除或归档素材不出现在有效成员列表中。
+
 后端通过 GORM 管理 SQLite 与 PostgreSQL 表结构。结构变化由 `migrate-schema` 按版本顺序执行并写入 `schema_migrations`；受管生产部署在 Backend 启动前运行独立迁移服务，Backend 只校验当前 Schema 是否与二进制兼容。业务写路径必须通过 service 和 repository 的状态约束，不能直接依赖前端状态。
 
 ## 结构迁移与版本

@@ -48,6 +48,8 @@ func Models() []any {
 		&model.StorageLocation{},
 		&model.UserDailyUploadUsage{},
 		&model.SharedAssetSeries{},
+		&model.PersonalAssetSeries{},
+		&model.PersonalAssetMembership{},
 		&model.SharedAsset{},
 		&model.SharedAssetUploadBatch{},
 		&model.SharedAssetUploadItem{},
