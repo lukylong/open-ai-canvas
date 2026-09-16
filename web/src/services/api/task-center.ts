@@ -1,3 +1,4 @@
+import { waitForPolledGenerationTask } from './task-polling';
 import { DREAMINA_SUBMIT_ERROR_MESSAGES, generationErrorMessage } from "@/lib/generation-error";
 import { apiBaseURL, apiClient, request, type BackendEnvelope } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser, type TaskTextStreamEvent } from "@/services/api/task-text-stream";
@@ -352,7 +353,7 @@ export function splitGenerationTaskObservationIds(ids: readonly string[]) {
 
 type GenerationTaskSubscriptionDependencies = {
     queryTask(id: string): Promise<GenerationTask>;
-    waitTask(id: string, options?: { initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
+    waitTask(id: string, options?: { signal?: AbortSignal; initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
 };
 
 export function createGenerationTaskSubscriptionService(dependencies: GenerationTaskSubscriptionDependencies) {
@@ -360,6 +361,7 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
         listeners: Set<(task: GenerationTask) => void>;
         latest?: GenerationTask;
         observation?: Promise<void>;
+        controller?: AbortController;
     };
     const entries = new Map<string, Entry>();
     const publish = (entry: Entry, task: GenerationTask) => {
@@ -368,16 +370,23 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
     };
     const observe = (id: string, entry: Entry) => {
         if (entry.observation) return;
+        const controller = new AbortController();
+        entry.controller = controller;
         entry.observation = (async () => {
             const initial = await dependencies.queryTask(id);
+            if (controller.signal.aborted) return;
             publish(entry, initial);
             if (initial.status === "succeeded" || initial.status === "failed" || initial.status === "cancelled") return;
             const terminal = await dependencies.waitTask(id, {
+                signal: controller.signal,
                 initialTask: initial,
                 onTaskUpdate: (task) => publish(entry, task),
             });
             publish(entry, terminal);
-        })().catch(() => undefined);
+        })().catch(() => undefined).finally(() => {
+            entry.observation = undefined;
+            if (!entry.listeners.size && entries.get(id) === entry) entries.delete(id);
+        });
     };
     return {
         subscribe(ids: readonly string[], listener: (task: GenerationTask) => void) {
@@ -390,7 +399,15 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
                 observe(id, entry);
             }
             return () => {
-                for (const id of uniqueIds) entries.get(id)?.listeners.delete(listener);
+                for (const id of uniqueIds) {
+                    const entry = entries.get(id);
+                    if (!entry) continue;
+                    entry.listeners.delete(listener);
+                    if (!entry.listeners.size) {
+                        entry.controller?.abort();
+                        entries.delete(id);
+                    }
+                }
             };
         },
     };
@@ -534,42 +551,14 @@ export async function waitForGenerationTask(id: string, options?: WaitForGenerat
         }
     }
     if (options?.onTextDelta || options?.useTextEvents) return waitForGenerationTaskTextEvents(id, options);
-    const startedAt = Date.now();
-    const intervalMs = options?.intervalMs || 2000;
-    let lastTask = options?.initialTask;
-    let lastQueryError: unknown;
-    try {
-        while (Date.now() - startedAt < (options?.timeoutMs || taskWaitTimeoutMs(lastTask))) {
-            if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-            let task: GenerationTask;
-            try {
-                task = await queryGenerationTask(id, { signal: options?.signal });
-                lastTask = task;
-                lastQueryError = undefined;
-                options?.onTaskUpdate?.(task);
-            } catch (error) {
-                lastQueryError = error;
-                await delay(intervalMs, options?.signal);
-                continue;
-            }
-            if (task.status === "succeeded") {
-                window.dispatchEvent(new CustomEvent("wallet:updated"));
-                return task;
-            }
-            if (task.status === "failed" || task.status === "cancelled") {
-                window.dispatchEvent(new CustomEvent("wallet:updated"));
-                throw new Error(task.error ? generationErrorMessage(task.error) : `任务${task.status === "cancelled" ? "已取消" : "失败"}`);
-            }
-            await delay(intervalMs, options?.signal);
-        }
-    } catch (error) {
-        if (options?.signal?.aborted) {
-            // Abort 只停止当前页面的状态监听，不能把已发起的上游任务改成取消状态。
-            throw new DOMException("Aborted", "AbortError");
-        }
-        throw error;
-    }
-    throw new Error(lastQueryError instanceof Error ? `任务状态同步失败：${lastQueryError.message}` : "任务执行超时，请稍后重试");
+    return waitForPolledGenerationTask(id, options, {
+        queryTask: queryGenerationTask,
+        now: Date.now,
+        pause: delay,
+        timeout: taskWaitTimeoutMs,
+        terminal: () => window.dispatchEvent(new CustomEvent("wallet:updated")),
+        errorMessage: generationErrorMessage,
+    });
 }
 
 async function waitForGenerationTaskTextEvents(id: string, options: WaitForGenerationTaskOptions) {
@@ -706,17 +695,19 @@ function taskWaitTimeoutMs(task?: GenerationTask) {
 
 function delay(ms: number, signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
-        const timer = window.setTimeout(resolve, ms);
-        signal?.addEventListener(
-            "abort",
-            () => {
-                window.clearTimeout(timer);
-                reject(new DOMException("Aborted", "AbortError"));
-            },
-            { once: true },
-        );
+        if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
+        const abort = () => {
+            clearTimeout(timer);
+            reject(new DOMException("Aborted", "AbortError"));
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", abort);
+            resolve();
+        }, ms);
+        signal?.addEventListener("abort", abort, { once: true });
     });
 }
+
 
 function notifyCanvasTaskCreated(task: GenerationTask) {
     if (typeof window === "undefined" || !task.projectId) return;

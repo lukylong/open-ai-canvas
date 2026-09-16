@@ -1,6 +1,6 @@
 import { AudioLines, Box, CheckCheck, CircleHelp, Clapperboard, Copy, Download, FileText, FileUp, FolderInput, FolderOpen, Image as ImageIcon, Layers3, Link2, MoreHorizontal, PencilLine, Play, Plus, RefreshCw, Search, Share2, Trash2, Upload, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Drawer, Dropdown, Form, Input, Modal, Popover, Progress, Segmented, Select, Space, Table, Tag, TreeSelect, Typography } from "antd";
 import type { MenuProps, TreeSelectProps } from "antd";
 import { useNavigate, useSearchParams } from "react-router";
@@ -20,12 +20,17 @@ import { formatBytes, readFileAsDataUrl, readImageMeta } from "@/lib/image-utils
 import { buildSharedSeriesTree, flattenSharedSeriesTree, sharedSeriesDescendantIds, sharedSeriesPath, type SharedSeriesTreeNode } from "@/lib/shared-series-tree";
 import { resolveSharedSeriesCover, sharedSeriesCoverCandidates } from "@/lib/shared-series-cover";
 import { SharedSeriesCoverPicker } from "./shared-series-cover-picker";
+import { PersonalSeriesManager } from "./personal-series-manager";
+import { listPersonalSeries, movePersonalAssets } from "@/services/api/personal-series";
+import { getRemoteAsset } from "@/services/api/user-data";
+import { personalSeriesMembers, personalSeriesOverview } from "@/lib/personal-series-library";
+import { saveAssetSeriesMembership } from "./save-asset-series";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { useAssetStore, type Asset, type AssetCategory, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetStorageUsage, assetStorageUsageQueryKey } from "./asset-storage-usage";
-import { deleteAssetWithRemoteSync, syncRemoteUserData } from "@/services/user-data-sync";
+import { deleteAssetWithRemoteSync, syncRemoteUserData, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { cancelPublication, listPublications, publishAsset, publishAssets, retryPublication, type DistributionPublication } from "@/services/api/distribution";
 import { useUserStore } from "@/stores/use-user-store";
 import { createSharedSeries, deleteSharedAsset, deleteSharedSeries, forgetSharedBatch, getSharedUploadBatch, getSharedUploadPolicy, listRememberedSharedBatches, listSharedAssets, listSharedSeries, moveSharedAsset, resumeSharedUploadBatch, setSharedSeriesCover, updateSharedAsset, updateSharedSeries, uploadSharedFiles, uploadSharedZIP, type SharedAsset, type SharedAssetSeries, type SharedUploadBatchDetail, type SharedUploadPolicy, type UploadProgress } from "@/services/api/shared-library";
@@ -34,6 +39,7 @@ import { createSharedSeries, deleteSharedAsset, deleteSharedSeries, forgetShared
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
 
 type AssetFormValues = {
+    seriesId?: string;
     kind: AssetKind;
     category: AssetCategory;
     title: string;
@@ -97,9 +103,13 @@ export default function AssetsPage() {
     const [pageSize, setPageSize] = useState(35);
     const [editingAsset, setEditingAsset] = useState<LibraryAsset | null>(null);
     const [isAssetOpen, setIsAssetOpen] = useState(false);
+    const [assetSaving, setAssetSaving] = useState(false);
+    const assetSavingRef = useRef(false);
+    const draftAssetIdRef = useRef<string | null>(null);
     const [previewAsset, setPreviewAsset] = useState<LibraryAsset | null>(null);
     const [deletingAsset, setDeletingAsset] = useState<LibraryAsset | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
     const [viewMode, setViewMode] = useState<"series" | "assets">("series");
     const [activeSeriesKey, setActiveSeriesKey] = useState<string | null>(null);
     const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
@@ -109,6 +119,17 @@ export default function AssetsPage() {
     const [publicationLoading, setPublicationLoading] = useState(false);
     const [publications, setPublications] = useState<DistributionPublication[]>([]);
     const [libraryScope, setLibraryScope] = useState<"personal" | "shared">("personal");
+    const [seriesManager, setSeriesManager] = useState<{ assetIds: string[]; seriesId?: string } | null>(null);
+    const personalSeriesQuery = useQuery({ queryKey: ["personal-series", userId], queryFn: ({ signal }) => listPersonalSeries(signal), enabled: Boolean(userId) });
+
+    useEffect(() => {
+        setSeriesManager(null);
+        setSelectedIds([]);
+        setSelectedFolderIds([]);
+        setActiveSeriesKey(null);
+        setIsAssetOpen(false);
+        draftAssetIdRef.current = null;
+    }, [userId]);
 
     const [formKind, setFormKind] = useState<AssetKind>("text");
     const [imageDraft, setImageDraft] = useState<ImageDraft>(null);
@@ -121,31 +142,43 @@ export default function AssetsPage() {
     const content = Form.useWatch("content", form) || "";
     const validAssets = useMemo(() => assets.filter((asset): asset is LibraryAsset => asset.kind !== "entity"), [assets]);
     const scopedAssets = useMemo(() => linkedMessageId ? validAssets.filter((asset) => asset.metadata?.messageId === linkedMessageId) : validAssets, [linkedMessageId, validAssets]);
-    const selectedAssets = useMemo(() => validAssets.filter((asset) => selectedIds.includes(asset.id)), [selectedIds, validAssets]);
-    const kindCounts = useMemo(() => new Map(kindOptions.map((option) => [option.value, option.value === "all" ? scopedAssets.length : scopedAssets.filter((asset) => asset.kind === option.value).length])), [scopedAssets]);
-    const categoryCounts = useMemo(() => new Map(categoryOptions.map((option) => [option.value, option.value === "all" ? scopedAssets.length : scopedAssets.filter((asset) => (asset.category || "other") === option.value).length])), [scopedAssets]);
+    const unassignedAssets = useMemo(() => personalSeriesQuery.data && !personalSeriesQuery.isError ? personalSeriesMembers(scopedAssets, personalSeriesQuery.data) : [], [scopedAssets, personalSeriesQuery.data, personalSeriesQuery.isError]);
+    const overviewSeries = useMemo(() => personalSeriesQuery.data && !personalSeriesQuery.isError ? personalSeriesOverview(scopedAssets, personalSeriesQuery.data) : [], [scopedAssets, personalSeriesQuery.data, personalSeriesQuery.isError]);
+    const selectedFolderAssets = useMemo(() => overviewSeries.filter((series) => series.seriesType === "manual" && selectedFolderIds.includes(series.seriesId)).flatMap((series) => series.assets), [overviewSeries, selectedFolderIds]);
+    const selectedAssets = useMemo(() => unassignedAssets.filter((asset) => selectedIds.includes(asset.id)), [selectedIds, unassignedAssets]);
+    const countAssets = viewMode === "assets" ? unassignedAssets : scopedAssets;
+    const kindCounts = useMemo(() => new Map(kindOptions.map((option) => [option.value, option.value === "all" ? countAssets.length : countAssets.filter((asset) => asset.kind === option.value).length])), [countAssets]);
+    const categoryCounts = useMemo(() => new Map(categoryOptions.map((option) => [option.value, option.value === "all" ? countAssets.length : countAssets.filter((asset) => (asset.category || "other") === option.value).length])), [countAssets]);
     const canCreateAsset = viewMode === "assets" && !keyword.trim() && kindFilter === "all" && categoryFilter === "all";
 
     const filteredAssets = useMemo(() => {
         const query = keyword.trim().toLowerCase();
-        return scopedAssets.filter((asset) => {
+        return unassignedAssets.filter((asset) => {
             if (kindFilter !== "all" && asset.kind !== kindFilter) return false;
             if (categoryFilter !== "all" && (asset.category || "other") !== categoryFilter) return false;
             if (!query) return true;
             return assetSearchText(asset).includes(query);
         });
-    }, [scopedAssets, keyword, kindFilter, categoryFilter]);
+    }, [unassignedAssets, keyword, kindFilter, categoryFilter]);
     const filteredAssetIds = useMemo(() => filteredAssets.map((asset) => asset.id), [filteredAssets]);
     const allFilteredSelected = filteredAssetIds.length > 0 && filteredAssetIds.every((id) => selectedIds.includes(id));
-    const allSeries = useMemo(() => groupAssetSeries(validAssets), [validAssets]);
-    const filteredSeries = useMemo(() => groupAssetSeries(filteredAssets), [filteredAssets]);
-    const filteredSeriesAssetIds = useMemo(() => filteredSeries.flatMap((series) => series.assets.map((asset) => asset.id)), [filteredSeries]);
+    const allSeries = useMemo(() => groupAssetSeries(validAssets, personalSeriesQuery.data), [validAssets, personalSeriesQuery.data]);
+    const filteredSeries = useMemo(() => {
+        const query = keyword.trim().toLowerCase();
+        return overviewSeries.flatMap((series) => {
+            const nameMatches = !query || series.title.toLowerCase().includes(query);
+            const members = series.assets.filter((asset) => (kindFilter === "all" || asset.kind === kindFilter) && (categoryFilter === "all" || (asset.category || "other") === categoryFilter) && (nameMatches || assetSearchText(asset).includes(query)));
+            return members.length || (series.seriesType === "manual" && !series.assets.length && nameMatches && kindFilter === "all" && categoryFilter === "all") ? [{ ...series, assets: members, assetCount: members.length }] : [];
+        });
+    }, [overviewSeries, keyword, kindFilter, categoryFilter]);
+    const filteredSeriesAssetIds = useMemo(() => filteredSeries.filter((series) => series.seriesType !== "manual").flatMap((series) => series.assets.map((asset) => asset.id)), [filteredSeries]);
     const allFilteredSeriesSelected = filteredSeriesAssetIds.length > 0 && filteredSeriesAssetIds.every((id) => selectedIds.includes(id));
     const selectedSeriesParts = useMemo(() => allSeries.flatMap((series) => {
+        if (series.seriesType === "manual") return [];
         const selected = series.assets.filter((asset) => selectedIds.includes(asset.id));
         return selected.length ? [{ series, assets: selected }] : [];
     }), [allSeries, selectedIds]);
-    const taskSeriesCount = useMemo(() => allSeries.filter((series) => series.seriesType !== "asset").length, [allSeries]);
+    const taskSeriesCount = useMemo(() => allSeries.filter((series) => series.seriesType === "task" || series.seriesType === "batch").length, [allSeries]);
     const activeSeries = useMemo(() => allSeries.find((series) => series.key === activeSeriesKey) || null, [activeSeriesKey, allSeries]);
 
     const visibleAssets = useMemo(() => {
@@ -179,9 +212,13 @@ export default function AssetsPage() {
     }, [allSeries, linkedSeriesId, pageSize]);
 
     useEffect(() => {
-        const existingIds = new Set(validAssets.map((asset) => asset.id));
+        const existingIds = new Set(unassignedAssets.map((asset) => asset.id));
         setSelectedIds((current) => current.filter((id) => existingIds.has(id)));
-    }, [validAssets]);
+    }, [unassignedAssets]);
+    useEffect(() => {
+        const folderIds = new Set(overviewSeries.filter((series) => series.seriesType === "manual").map((series) => series.seriesId));
+        setSelectedFolderIds((current) => current.filter((id) => folderIds.has(id)));
+    }, [overviewSeries]);
 
     const clearLinkedMessage = () => {
         const next = new URLSearchParams(searchParams);
@@ -197,18 +234,22 @@ export default function AssetsPage() {
         setSearchParams(next, { replace: true });
     };
 
-    const openCreate = () => {
+    const openCreate = (seriesId = "") => {
+        draftAssetIdRef.current = null;
+        setSeriesManager(null);
         setEditingAsset(null);
         setImageDraft(null);
         setImageFile(null);
         setImageUploading(false);
         setImageUploadProgress(null);
         setFormKind("text");
-        form.setFieldsValue({ kind: "text", category: "other", title: "", coverUrl: "", tags: [], source: "手动添加", note: "", content: "" });
+        form.setFieldsValue({ kind: "text", category: "other", seriesId, title: "", coverUrl: "", tags: [], source: "手动添加", note: "", content: "" });
         setIsAssetOpen(true);
     };
 
     const openEdit = (asset: LibraryAsset) => {
+        draftAssetIdRef.current = asset.id;
+        setSeriesManager(null);
         setEditingAsset(asset);
         setImageFile(null);
         setImageUploading(false);
@@ -217,6 +258,7 @@ export default function AssetsPage() {
         setImageDraft(asset.kind === "image" ? asset.data : null);
         form.setFieldsValue({
             kind: asset.kind,
+            seriesId: personalSeriesQuery.data?.memberships.find((member) => member.assetId === asset.id)?.seriesId || "",
             category: asset.category || "other",
             title: asset.title,
             coverUrl: asset.coverUrl,
@@ -229,53 +271,77 @@ export default function AssetsPage() {
     };
 
     const saveAsset = async () => {
-        const values = await form.validateFields();
-        let imageData = imageDraft;
-        if (values.kind === "image" && imageFile) {
-            setImageUploading(true);
-            setImageUploadProgress({ phase: "uploading", percent: 0 });
-            try {
+        if (assetSavingRef.current) return;
+        assetSavingRef.current = true;
+        setAssetSaving(true);
+        try {
+            const values = await form.validateFields();
+            const assertSaveScope = () => { if (!userId || useUserStore.getState().user?.id !== userId) throw new Error("登录账号已变化，请重新打开表单"); };
+            assertSaveScope();
+            if (personalSeriesQuery.isError || !personalSeriesQuery.data) throw new Error("系列尚未加载，请稍后重试");
+            let imageData = imageDraft;
+            const originalDraftUrl = imageDraft?.dataUrl;
+            if (values.kind === "image" && imageFile) {
+                setImageUploading(true);
+                setImageUploadProgress({ phase: "uploading", percent: 0 });
                 const image = await uploadImage(imageFile);
                 setImageUploadProgress({ phase: "confirming" });
                 imageData = { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType };
+                if (values.coverUrl === originalDraftUrl) {
+                    values.coverUrl = image.url;
+                    form.setFieldValue("coverUrl", image.url);
+                }
                 setImageDraft(imageData);
                 setImageFile(null);
                 void queryClient.invalidateQueries({ queryKey: assetStorageUsageQueryKey });
-            } catch (error) {
-                message.error(error instanceof Error ? error.message : "图片上传失败，请重试");
-                return;
-            } finally {
                 setImageUploading(false);
                 setImageUploadProgress(null);
             }
-        }
-
-        const base = {
-            title: values.title.trim(),
-            category: values.category,
-            status: editingAsset?.status || "confirmed" as const,
-            primaryVersionId: editingAsset?.primaryVersionId,
-            coverUrl: values.coverUrl?.trim() || (values.kind === "image" && imageData ? imageData.dataUrl : ""),
-            tags: values.tags || [],
-            source: values.source?.trim(),
-            note: values.note?.trim(),
-            metadata: editingAsset?.metadata || { source: "manual" },
-        };
-
-        if (values.kind === "text") {
-            const asset = { ...base, kind: "text" as const, data: { content: (values.content || "").trim() } };
-            editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
-        } else {
-            if (!imageData) {
-                message.error("请选择图片文件");
-                return;
+            assertSaveScope();
+            const base = {
+                title: values.title.trim(),
+                category: values.category,
+                status: editingAsset?.status || "confirmed" as const,
+                primaryVersionId: editingAsset?.primaryVersionId,
+                coverUrl: values.kind === "image" && imageData && values.coverUrl === originalDraftUrl ? imageData.dataUrl : values.coverUrl?.trim() || (values.kind === "image" && imageData ? imageData.dataUrl : ""),
+                tags: values.tags || [],
+                source: values.source?.trim(),
+                note: values.note?.trim(),
+                metadata: editingAsset?.metadata || { source: "manual" },
+            };
+            if (values.kind !== "text" && !imageData) throw new Error("请选择图片文件");
+            const asset = values.kind === "text"
+                ? { ...base, kind: "text" as const, data: { content: (values.content || "").trim() } }
+                : { ...base, kind: "image" as const, data: imageData! };
+            let id = editingAsset?.id || draftAssetIdRef.current;
+            if (id) updateAsset(id, asset);
+            else { id = addAsset(asset); draftAssetIdRef.current = id; }
+            const seriesId = values.seriesId || "";
+            const previousSeriesId = personalSeriesQuery.data.memberships.find((member) => member.assetId === id)?.seriesId || "";
+            await saveAssetSeriesMembership(id, seriesId, previousSeriesId, {
+                persist: async () => { assertSaveScope(); await saveRemoteUserDataNow(); },
+                confirmAsset: async (id) => { assertSaveScope(); return getRemoteAsset(id); },
+                move: async (ids, target) => {
+                    assertSaveScope();
+                    return movePersonalAssets(ids, target);
+                },
+            });
+            assertSaveScope();
+            const refreshed = await personalSeriesQuery.refetch();
+            if (refreshed.error) throw refreshed.error;
+            message.success(editingAsset ? "素材与系列已更新" : seriesId ? "素材已保存到系列" : "素材已保存到未归组");
+            setIsAssetOpen(false);
+            if (seriesId) setSeriesManager({ seriesId, assetIds: [] });
+        } catch (error) {
+            if (!(error && typeof error === "object" && "errorFields" in error)) {
+                message.error(`${error instanceof Error ? error.message : "保存失败"}；请重试，已保存的素材不会重复创建`);
             }
-            const asset = { ...base, kind: "image" as const, data: imageData };
-            editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
+        } finally {
+            assetSavingRef.current = false;
+            setAssetSaving(false);
+            setImageUploading(false);
+            setImageUploadProgress(null);
         }
-
-        message.success(editingAsset ? "素材已更新" : "素材已保存");
-        setIsAssetOpen(false);
     };
 
     const readCoverFile = async (file?: File) => {
@@ -502,12 +568,14 @@ export default function AssetsPage() {
                 <PageHeader
                     title="素材库"
                     description="管理文本、图片、视频、音频和 3D 模型素材。"
-                    meta={<span className="app-projects-header-meta assets-header-meta">{allSeries.length} 个系列 · {taskSeriesCount} 个任务归组 · {validAssets.length} 个素材</span>}
+                    meta={<span className="app-projects-header-meta assets-header-meta">{overviewSeries.length} 个系列入口 · {taskSeriesCount} 个任务归组 · {unassignedAssets.length} 个未归组素材</span>}
                     actions={(
                         <div className="assets-header-actions">
                             <div className="assets-header-action-buttons">
                                 {canUseSharedLibrary ? <Segmented options={[{ label: "我的素材", value: "personal" }, { label: "共享素材", value: "shared" }]} value="personal" onChange={(value) => setLibraryScope(value as "personal" | "shared")} /> : null}
-                                <Button className="library-primary-action" type="primary" icon={<Plus className="size-3.5" />} onClick={openCreate}>新增素材</Button>
+                                <Button className="library-primary-action" type="primary" icon={<Plus className="size-3.5" />} onClick={() => openCreate()}>新增素材</Button>
+                                <Button icon={<FolderInput className="size-3.5" />} loading={personalSeriesQuery.isLoading} disabled={!personalSeriesQuery.data || personalSeriesQuery.isError} onClick={() => setSeriesManager({ assetIds: selectedAssets.map((asset) => asset.id) })}>{selectedAssets.length ? `整理 ${selectedAssets.length} 个素材` : "系列管理"}</Button>
+                                {personalSeriesQuery.isError ? <Button danger onClick={() => void personalSeriesQuery.refetch()}>系列加载失败，点击重试</Button> : null}
                                 <Button icon={<FolderOpen className="size-3.5" />} onClick={() => navigate("/plugins/eagle")}>Eagle 素材库</Button>
                                 <Button icon={<Share2 className="size-3.5" />} onClick={openPublications}>分发记录</Button>
                                 <Button loading={refreshingAssets} icon={<RefreshCw className="size-3.5" />} onClick={() => void refreshAssets()}>刷新素材</Button>
@@ -524,8 +592,8 @@ export default function AssetsPage() {
                     <Input allowClear className="w-full sm:w-80" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索标题、内容、标签或来源" onChange={(event) => { setPage(1); setKeyword(event.target.value); }} />
                     <AssetsViewSwitch
                         value={viewMode}
-                        seriesCount={allSeries.length}
-                        assetCount={validAssets.length}
+                        seriesCount={overviewSeries.length}
+                        assetCount={unassignedAssets.length}
                         onChange={(value) => { setViewMode(value); setPage(1); }}
                     />
                 </ListToolbar>
@@ -538,6 +606,7 @@ export default function AssetsPage() {
                         <AssetFilterGroup title="业务分类" options={categoryOptions} value={categoryFilter} counts={categoryCounts} onChange={(value) => { setCategoryFilter(value as AssetCategory | "all"); setPage(1); }} className="lg:mt-5" />
                     </aside>
                     <section className="min-w-0">
+                        {viewMode === "series" && selectedFolderIds.length ? <Space wrap className="mb-3"><Typography.Text>已选择 {selectedFolderIds.length} 个系列</Typography.Text><Button disabled={!selectedFolderAssets.length || personalSeriesQuery.isError} loading={batchPublishLoading} onClick={() => void distributeAssetBatch(selectedFolderAssets)}>同步所选系列</Button><Button disabled={!selectedFolderAssets.length} onClick={() => void exportAssets(selectedFolderAssets)}>导出所选系列</Button><Button onClick={() => setSelectedFolderIds([])}>取消系列选择</Button></Space> : null}
                         {linkedMessageId ? (
                             <div className="assets-series-summary">
                                 <span className="assets-series-summary-copy"><ImageIcon /><span><strong>本次生成的 {scopedAssets.length} 个素材</strong>已按生成消息筛选，可逐项查看或批量选择</span></span>
@@ -559,19 +628,21 @@ export default function AssetsPage() {
                         ) : null}
                         {viewMode === "series" && !selectedAssets.length && filteredSeries.length ? (
                             <div className="assets-series-summary">
-                                <span className="assets-series-summary-copy"><Layers3 /><span><strong>{filteredSeries.length} 个系列</strong>已按批量任务、生成任务和独立素材归组</span></span>
-                                <button type="button" onClick={() => setSelectedIds((current) => Array.from(new Set([...current, ...filteredSeriesAssetIds])))}>选择当前结果</button>
+                                <span className="assets-series-summary-copy"><Layers3 /><span><strong>{filteredSeries.length} 个系列</strong>手动系列优先；未整理素材按批量任务、生成任务归组</span></span>
+                                {filteredSeriesAssetIds.length ? <button type="button" onClick={() => setSelectedIds((current) => Array.from(new Set([...current, ...filteredSeriesAssetIds])))}>选择未归组素材</button> : null}
                             </div>
                         ) : null}
-                        {validAssets.length === 0 ? (
-                            <AssetsEmptyState onNew={openCreate} onImport={() => assetInputRef.current?.click()} onGoCanvas={() => navigate("/canvas")} />
+                        {!personalSeriesQuery.data || personalSeriesQuery.isError ? (
+                            <WorkspaceState icon="assets" compact title={personalSeriesQuery.isError ? "系列加载失败，请重试" : "正在加载系列"} description="系列信息就绪后再展示素材，避免混入其他系列。" />
+                        ) : validAssets.length === 0 && !personalSeriesQuery.data.series.length ? (
+                            <AssetsEmptyState onNew={() => openCreate()} onImport={() => assetInputRef.current?.click()} onGoCanvas={() => navigate("/canvas")} />
                         ) : (
                             <>
                                 {resultCount === 0 ? (
                                     <WorkspaceState icon="assets" compact title="没有匹配的素材" description="调整关键词或左侧分类后再试。" />
                                 ) : (
                                     <CollectionGrid className="library-grid assets-library-grid">
-                                        {canCreateAsset ? <button type="button" className="library-create-card" onClick={openCreate}>
+                                        {canCreateAsset ? <button type="button" className="library-create-card" onClick={() => openCreate()}>
                                             <span className="library-create-cover"><Plus className="size-8" /></span>
                                             <span className="library-create-title">新增素材</span>
                                             <span className="library-create-meta">文本、图片、音视频或模型</span>
@@ -580,9 +651,12 @@ export default function AssetsPage() {
                                             <AssetSeriesCard
                                                 key={series.key}
                                                 series={series}
+                                                coverAsset={validAssets.find((asset) => asset.id === series.coverAssetId)}
                                                 selectedIds={selectedIds}
-                                                onSelect={(selected) => setSelectedIds((current) => selected ? Array.from(new Set([...current, ...series.assets.map((asset) => asset.id)])) : current.filter((id) => !series.assets.some((asset) => asset.id === id)))}
-                                                onOpen={() => setActiveSeriesKey(series.key)}
+                                                folderSelected={selectedFolderIds.includes(series.seriesId)}
+                                                onSelect={(selected) => { if (series.seriesType === "manual") setSelectedFolderIds((current) => selected ? [...new Set([...current, series.seriesId])] : current.filter((id) => id !== series.seriesId)); else setSelectedIds((current) => selected ? Array.from(new Set([...current, ...series.assets.map((asset) => asset.id)])) : current.filter((id) => !series.assets.some((asset) => asset.id === id))); }}
+                                                onOpen={() => series.seriesType === "manual" ? setSeriesManager({ assetIds: [], seriesId: series.seriesId }) : setActiveSeriesKey(series.key)}
+                                                onManage={personalSeriesQuery.data && !personalSeriesQuery.isError ? () => setSeriesManager({ assetIds: series.seriesType === "manual" ? [] : series.assets.map((asset) => asset.id), seriesId: series.seriesType === "manual" ? series.seriesId : undefined }) : undefined}
                                                 onPublish={() => void distributeAssetBatch(series.assets, series)}
                                                 onExport={() => void exportAssets(series.assets)}
                                             />
@@ -598,10 +672,14 @@ export default function AssetsPage() {
                 </div>
             </div>
             </WorkspacePage>
+            {seriesManager && personalSeriesQuery.data ? <PersonalSeriesManager key={userId} state={personalSeriesQuery.data} assets={validAssets} selectedIds={seriesManager.assetIds} initialSeriesId={seriesManager.seriesId} onClose={() => setSeriesManager(null)} onCreateAsset={openCreate} onEditAsset={(asset) => { if (asset.kind !== "entity") openEdit(asset); }} onChanged={async () => { const result = await personalSeriesQuery.refetch(); if (result.error) throw result.error; }} /> : null}
 
-            <Modal className="workspace-modal workspace-modal-wide library-modal" title={editingAsset ? "编辑素材" : "新增素材"} open={isAssetOpen} onCancel={() => { if (!imageUploading) setIsAssetOpen(false); }} onOk={() => void saveAsset()} okText={imageUploading ? "正在上传" : "保存"} cancelText="取消" confirmLoading={imageUploading} cancelButtonProps={{ disabled: imageUploading }} closable={!imageUploading} destroyOnHidden>
+            <Modal className="workspace-modal workspace-modal-wide library-modal asset-editor-modal" title={editingAsset ? "编辑素材" : "新增素材"} open={isAssetOpen} onCancel={() => { if (!assetSaving) setIsAssetOpen(false); }} onOk={() => void saveAsset()} okText={imageUploading ? "正在上传" : assetSaving ? "正在保存" : "保存"} cancelText="取消" confirmLoading={assetSaving} okButtonProps={{ disabled: !personalSeriesQuery.data || personalSeriesQuery.isError }} cancelButtonProps={{ disabled: assetSaving }} closable={!assetSaving} destroyOnHidden>
                 <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-                    <Form form={form} layout="vertical" requiredMark={false} initialValues={{ kind: "text", category: "other", tags: [] }}>
+                    <Form form={form} layout="vertical" requiredMark={false} disabled={assetSaving} initialValues={{ kind: "text", category: "other", seriesId: "", tags: [] }}>
+                        <Form.Item name="seriesId" label="所属系列" extra="选择后直接保存到系列；留在未归组的素材才会在外层单独显示。">
+                            <TreeSelect aria-label="所属系列" showSearch treeNodeFilterProp="searchText" treeNodeLabelProp="label" treeDefaultExpandAll treeData={[{ value: "", title: "未归组", label: "未归组" }, ...buildSharedSeriesTree(personalSeriesQuery.data?.series || [])]} />
+                        </Form.Item>
                         <Form.Item name="kind" label="类型">
                             <Select
                                 options={[
@@ -617,13 +695,13 @@ export default function AssetsPage() {
                         <Form.Item name="title" label="标题" rules={[{ required: true, message: "请输入标题" }]}>
                                 <Input placeholder="给素材起一个容易检索的名字" />
                         </Form.Item>
-                        <Form.Item name="coverUrl" label="封面 URL">
-                            <Space.Compact className="w-full">
-                                <Input placeholder="可粘贴图片 URL，也可以上传本地封面" />
+                        <Form.Item label="封面 URL">
+                            <div className="asset-cover-upload">
+                                <Form.Item name="coverUrl" noStyle><Input aria-label="封面 URL" placeholder="可粘贴图片 URL，也可以上传本地封面" /></Form.Item>
                                 <Button icon={<Upload className="size-3.5" />} onClick={() => coverInputRef.current?.click()}>
                                     上传
                                 </Button>
-                            </Space.Compact>
+                            </div>
                         </Form.Item>
                         <Form.Item name="tags" label="标签">
                             <Select mode="tags" tokenSeparators={[",", "，"]} placeholder="输入标签后回车" />
@@ -737,7 +815,7 @@ export default function AssetsPage() {
                 {activeSeries ? (
                     <>
                         <div className="mb-4 flex flex-wrap gap-2">
-                            <Tag>{activeSeries.seriesType === "batch" ? "批量任务" : activeSeries.seriesType === "task" ? "生成任务" : "单素材"}</Tag>
+                            <Tag>{activeSeries.seriesType === "manual" ? "手动系列" : activeSeries.seriesType === "batch" ? "批量任务" : activeSeries.seriesType === "task" ? "生成任务" : "单素材"}</Tag>
                             <Tag>{activeSeries.assetCount} 个素材</Tag>
                             <Typography.Text type="secondary" copyable={{ text: activeSeries.seriesId }}>{activeSeries.seriesId}</Typography.Text>
                         </div>
@@ -1147,26 +1225,27 @@ function SharedSeriesTreeSelect({ className, value, treeData, rootOption, placeh
     />;
 }
 
-function AssetSeriesCard({ series, selectedIds, onSelect, onOpen, onPublish, onExport }: { series: AssetSeries<LibraryAsset>; selectedIds: string[]; onSelect: (selected: boolean) => void; onOpen: () => void; onPublish: () => void; onExport: () => void }) {
-    const cover = series.assets[0];
-    const allSelected = series.assets.every((asset) => selectedIds.includes(asset.id));
+function AssetSeriesCard({ series, selectedIds, onSelect, onOpen, onPublish, onExport, onManage, coverAsset, folderSelected = false }: { series: AssetSeries<LibraryAsset>; selectedIds: string[]; onSelect: (selected: boolean) => void; onOpen: () => void; onPublish: () => void; onExport: () => void; onManage?: () => void; coverAsset?: LibraryAsset; folderSelected?: boolean }) {
+    const cover = coverAsset || series.assets[0];
+    const allSelected = series.seriesType === "manual" ? folderSelected : series.assets.length > 0 && series.assets.every((asset) => selectedIds.includes(asset.id));
     const distributableCount = series.assets.filter((asset) => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio").length;
     const menuItems: MenuProps["items"] = [
         { key: "open", icon: <Layers3 className="size-3.5" />, label: "查看系列", onClick: onOpen },
+        { key: "manage", icon: <PencilLine className="size-3.5" />, label: "整理 / 管理系列", disabled: !onManage, onClick: onManage },
         { key: "select", icon: <CheckCheck className="size-3.5" />, label: allSelected ? "取消选择系列" : "选择整个系列", onClick: () => onSelect(!allSelected) },
         { key: "export", icon: <Download className="size-3.5" />, label: "导出整个系列", onClick: onExport },
         { key: "distribute", icon: <Share2 className="size-3.5" />, label: "同步分发整个系列", disabled: distributableCount === 0, onClick: onPublish },
     ];
     return <AssetSeriesCardLayout
         selected={allSelected}
-        cover={<AssetCover asset={cover} selected={allSelected} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} />}
+        cover={cover ? <AssetCover asset={cover} selectionLabel={series.seriesType === "manual" ? `选择系列：${series.title}` : undefined} selected={allSelected} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} /> : <AssetLibraryCardMedia className="assets-cover"><button type="button" className="assets-cover-link" onClick={onOpen} aria-label={`打开系列：${series.title}`}><span className="assets-cover-fallback"><FolderOpen /></span></button></AssetLibraryCardMedia>}
         title={series.title}
         updatedLabel={formatAssetTime(series.updatedAt)}
         summary={`${series.assetCount} 个素材 · ${series.kind === "mixed" ? "混合类型" : assetKindLabel(series.kind)}`}
-        typeLabel={series.seriesType === "batch" ? "批量系列" : series.seriesType === "task" ? "任务系列" : "独立素材"}
+        typeLabel={series.seriesType === "manual" ? "手动系列" : series.seriesType === "batch" ? "批量系列" : series.seriesType === "task" ? "任务系列" : "独立素材"}
         seriesId={series.seriesId}
         onOpen={onOpen}
-        actions={<><button type="button" onClick={onOpen}><Layers3 />查看系列</button><button type="button" disabled={distributableCount === 0} onClick={onPublish}><Share2 />同步分发</button></>}
+        actions={<><button type="button" onClick={onOpen}><Layers3 />查看系列</button>{onManage ? <button type="button" onClick={onManage}><PencilLine />管理系列</button> : null}<button type="button" disabled={distributableCount === 0} onClick={onPublish}><Share2 />同步分发</button></>}
     />;
 }
 
@@ -1210,7 +1289,7 @@ function DistributionStatus({ status }: { status: DistributionPublication["statu
     return <Tag color={value.color}>{value.label}</Tag>;
 }
 
-function AssetCover({ asset, selected, onSelect, onOpen, menuItems }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"] }) {
+function AssetCover({ asset, selected, onSelect, onOpen, menuItems, selectionLabel }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"]; selectionLabel?: string }) {
     const KindIcon = assetKindIcons[asset.kind];
     const clock = asset.kind === "video" || asset.kind === "audio" ? formatAssetClock(asset.data.durationMs) : null;
     const showPlay = asset.kind === "video";
@@ -1235,7 +1314,7 @@ function AssetCover({ asset, selected, onSelect, onOpen, menuItems }: { asset: L
                 <span className="assets-cover-badge is-category">{assetCategoryLabel(asset.category)}</span>
             </span>
             {clock ? <span className="assets-cover-clock">{clock}</span> : null}
-            <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} />
+            <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={selectionLabel || `选择 ${asset.title}`} />
             <Dropdown
                 trigger={["click"]}
                 menu={{ items: menuItems }}
@@ -1278,7 +1357,7 @@ function ModelCover({ asset }: { asset: LibraryAsset & { kind: "model" } }) {
 function AssetsViewSwitch({ value, seriesCount, assetCount, onChange }: { value: "series" | "assets"; seriesCount: number; assetCount: number; onChange: (value: "series" | "assets") => void }) {
     const options = [
         { value: "series" as const, label: "系列视图", description: `${seriesCount} 个系列`, icon: Layers3 },
-        { value: "assets" as const, label: "全部素材", description: `${assetCount} 个素材`, icon: ImageIcon },
+        { value: "assets" as const, label: "未归组素材", description: `${assetCount} 个素材`, icon: ImageIcon },
     ];
     return (
         <div className="assets-view-switch" role="group" aria-label="素材库显示方式">

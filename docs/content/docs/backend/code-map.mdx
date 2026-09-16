@@ -10,6 +10,7 @@ description: 迁移、邀请、分发、导演方案和 ComfyUI 协议入口
 | 邀请注册 | `handler/auth.go` | `service/auth.go`, `service/invitations.go` | `repository/invitations.go`, `models_identity.go` |
 | ZQ 迁移与素材系列血缘 | `cmd/migrate-zq-studio` | `internal/zqmigration` | `models_migration.go` |
 | 单素材/批量/系列手动分发 | `handler/distribution.go` 的 `/assets/:id/publications`、`/publications/batch` | `service/distribution.go` | `repository/distribution.go` |
+| 个人素材系列管理 | `handler/personal_series.go` 的 `/personal-series` | `service/personal_series.go` | `repository/personal_series.go`, `models_personal_series.go` |
 | 导演方案选择 | `handler/project.go` | `service/director_proposal.go` | `repository/director_proposal.go` |
 | ComfyUI 工作流 | 任务 worker | `service/provider_comfyui.go` | `ModelChannel` / `ChannelModel` |
 | 管理员创建 | `cmd/create-admin` | 独立运维命令 | `User`, `AuthSession` |

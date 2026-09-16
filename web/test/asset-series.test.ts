@@ -63,7 +63,7 @@ describe("asset series", () => {
         const styles = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
 
         expect(source).toContain("<AssetsViewSwitch");
-        expect(source).toContain("选择当前结果");
+        expect(source).toContain("选择未归组素材");
         expect(source).toContain("批量同步分发");
         expect(source).toContain("distributeSelectedSeries");
         expect(source).toContain("series_id: series.seriesId");

@@ -47,7 +47,7 @@ func TestManualDistributionPublicationDispatchesSignedOutbox(t *testing.T) {
 	if sqlDB, err := db.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(1)
 	}
-	if err := db.AutoMigrate(&model.User{}, &model.Resource{}, &model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}, &model.DistributionPublication{}, &model.DistributionOutbox{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Resource{}, &model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}, &model.DistributionPublication{}, &model.DistributionOutbox{}, &model.PersonalAssetSeries{}, &model.PersonalAssetMembership{}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
@@ -90,6 +90,43 @@ func TestManualDistributionPublicationDispatchesSignedOutbox(t *testing.T) {
 	if publication.Status != model.DistributionPublicationPublished || publication.PublishedAt == nil {
 		t.Fatalf("publication = %#v", publication)
 	}
+	series, err := svc.SavePersonalSeries(user, "", "手动系列", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MovePersonalAssets(user, series.ID, []string{asset.ID}); err != nil {
+		t.Fatal(err)
+	}
+	var publicationCount int64
+	if err := db.Model(&model.DistributionPublication{}).Count(&publicationCount).Error; err != nil || publicationCount != 1 {
+		t.Fatal("series management unexpectedly enqueued distribution", publicationCount, err)
+	}
+	managed, err := svc.CreateDistributionPublication(user, asset.ID, CreateDistributionPublicationRequest{Metadata: map[string]any{"series_id": "forged", "series_type": "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event distributionEvent
+	if err := json.Unmarshal([]byte(managed.PayloadJSON), &event); err != nil {
+		t.Fatal(err)
+	}
+	if managed.ID == publication.ID || event.Resources[0].Metadata["series_id"] != series.ID || event.Resources[0].Metadata["series_type"] != "manual" {
+		t.Fatal("manual regrouping was ignored or reused old outbox")
+	}
+	previousVersion := event.Resources[0].Version
+	if err := svc.MovePersonalAssets(user, "", []string{asset.ID}); err != nil {
+		t.Fatal(err)
+	}
+	unassigned, err := svc.CreateDistributionPublication(user, asset.ID, CreateDistributionPublicationRequest{Metadata: map[string]any{"series_id": series.ID, "series_type": "manual"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event = distributionEvent{}
+	if err := json.Unmarshal([]byte(unassigned.PayloadJSON), &event); err != nil {
+		t.Fatal(err)
+	}
+	if unassigned.ID == managed.ID || event.Resources[0].Version <= previousVersion || event.Resources[0].Metadata["series_id"] != nil {
+		t.Fatal("explicit move-out retained stale series or version")
+	}
 }
 
 func TestBatchDistributionAcceptsPayloadBackedCanvasAssets(t *testing.T) {
@@ -104,7 +141,7 @@ func TestBatchDistributionAcceptsPayloadBackedCanvasAssets(t *testing.T) {
 	if sqlDB, err := db.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(1)
 	}
-	if err := db.AutoMigrate(&model.User{}, &model.Resource{}, &model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}, &model.DistributionPublication{}, &model.DistributionOutbox{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Resource{}, &model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}, &model.DistributionPublication{}, &model.DistributionOutbox{}, &model.PersonalAssetSeries{}, &model.PersonalAssetMembership{}); err != nil {
 		t.Fatal(err)
 	}
 	user := &model.User{ID: "user-batch", Username: "batch-user", Role: model.UserRoleUser, Status: model.UserStatusActive}

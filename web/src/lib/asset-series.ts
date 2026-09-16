@@ -1,6 +1,7 @@
 import type { Asset } from "@/stores/use-asset-store";
+import type { PersonalSeriesState } from "@/services/api/personal-series";
 
-export type AssetSeriesType = "batch" | "task" | "asset";
+export type AssetSeriesType = "batch" | "task" | "asset" | "manual";
 
 export type AssetSeries<T extends Asset = Asset> = {
     key: string;
@@ -11,12 +12,16 @@ export type AssetSeries<T extends Asset = Asset> = {
     assetCount: number;
     updatedAt: string;
     kind: T["kind"] | "mixed";
+    coverAssetId?: string;
 };
 
-export function groupAssetSeries<T extends Asset>(assets: T[]): AssetSeries<T>[] {
+export function groupAssetSeries<T extends Asset>(assets: T[], personal?: PersonalSeriesState): AssetSeries<T>[] {
+    const manualSeries = new Map(personal?.series.map((series) => [series.id, series]));
+    const memberships = new Map(personal?.memberships.map((member) => [member.assetId, member.seriesId]));
     const groups = new Map<string, { seriesId: string; seriesType: AssetSeriesType; assets: T[] }>();
     for (const asset of assets) {
-        const identity = assetSeriesIdentity(asset);
+        const manual = manualSeries.get(memberships.get(asset.id) || "");
+        const identity = manual ? { key: `manual:${manual.id}`, seriesId: manual.id, seriesType: "manual" as const } : assetSeriesIdentity(asset);
         const group = groups.get(identity.key) || { ...identity, assets: [] };
         group.assets.push(asset);
         groups.set(identity.key, group);
@@ -26,15 +31,17 @@ export function groupAssetSeries<T extends Asset>(assets: T[]): AssetSeries<T>[]
             const sortedAssets = [...group.assets].sort((left, right) => assetSeriesOrdinal(left) - assetSeriesOrdinal(right) || timestamp(left.createdAt) - timestamp(right.createdAt));
             const updatedAt = sortedAssets.reduce((latest, asset) => timestamp(asset.updatedAt) > timestamp(latest) ? asset.updatedAt : latest, sortedAssets[0]?.updatedAt || "");
             const kinds = new Set(sortedAssets.map((asset) => asset.kind));
+            const manual = group.seriesType === "manual" ? manualSeries.get(group.seriesId) : undefined;
             return {
                 key,
                 seriesId: group.seriesId,
                 seriesType: group.seriesType,
-                title: assetSeriesTitle(group.seriesType, group.seriesId, sortedAssets),
+                title: manual?.name || assetSeriesTitle(group.seriesType, group.seriesId, sortedAssets),
                 assets: sortedAssets,
                 assetCount: sortedAssets.length,
                 updatedAt,
                 kind: kinds.size === 1 ? sortedAssets[0].kind : "mixed",
+                ...(manual ? { coverAssetId: manual.coverAssetId } : {}),
             } satisfies AssetSeries<T>;
         })
         .sort((left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt));

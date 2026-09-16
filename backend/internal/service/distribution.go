@@ -110,6 +110,46 @@ func (s *Service) CreateDistributionPublication(user *model.User, assetID string
 		metadata[key] = value
 	}
 	item := distributionResource{Action: "upsert", ExternalID: asset.ID, Version: maxInt64(1, asset.UpdatedAt.UnixMilli()), Type: distributionAssetType(resource.Kind), Title: asset.Title, FileURL: fileURL, FilePath: resource.ObjectKey, SourceUpdatedAt: asset.UpdatedAt.UTC().Format(time.RFC3339Nano), Metadata: metadata}
+	// Read membership and its ancestors under the same account lock as series
+	// management. A parent-level batch request must never rename its descendants.
+	for _, key := range []string{"series_path", "series_path_ids", "series_parent_id"} {
+		delete(metadata, key)
+	}
+	if err := s.repo.PersonalSeriesTransaction(user.ID, func(repo *repository.Repository) error {
+		member, err := repo.PersonalMembership(user.ID, asset.ID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		item.Version = maxInt64(item.Version, member.UpdatedAt.UnixMilli())
+		if member.SeriesID != "" {
+			rows, err := repo.PersonalSeries(user.ID)
+			if err != nil {
+				return err
+			}
+			lineage, version, err := personalDistributionSeriesLineage(rows, member.SeriesID)
+			if err != nil {
+				return err
+			}
+			for key, value := range lineage {
+				metadata[key] = value
+			}
+			item.Version = maxInt64(item.Version, version)
+		} else {
+			for _, key := range []string{"series_id", "series_type", "series_label"} {
+				delete(metadata, key)
+			}
+			for key, value := range distributionPayloadLineage(asset.PayloadJSON, asset.Title) {
+				metadata[key] = value
+			}
+		}
+		item.SourceUpdatedAt = time.UnixMilli(item.Version).UTC().Format(time.RFC3339Nano)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	source := distributionSource()
 	fingerprint, _ := json.Marshal(struct {
 		Source         string `json:"source"`
@@ -133,6 +173,40 @@ func (s *Service) CreateDistributionPublication(user *model.User, assetID string
 		return nil, err
 	}
 	return &publication, nil
+}
+
+func personalDistributionSeriesLineage(rows []model.PersonalAssetSeries, seriesID string) (map[string]any, int64, error) {
+	byID := make(map[string]model.PersonalAssetSeries, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	path := []model.PersonalAssetSeries{}
+	seen := map[string]bool{}
+	var version int64
+	for id := seriesID; id != ""; {
+		row, ok := byID[id]
+		if !ok || seen[id] || len(path) >= sharedSeriesMaxDepth || strings.TrimSpace(row.Name) == "" {
+			return nil, 0, BadAuthRequest("系列层级无效，请先整理系列后再同步")
+		}
+		seen[id] = true
+		path = append(path, row)
+		version = maxInt64(version, row.UpdatedAt.UnixMilli())
+		id = row.ParentID
+	}
+	if len(path) == 0 {
+		return nil, 0, BadAuthRequest("素材未指定有效系列")
+	}
+	names, ids := make([]string, 0, len(path)), make([]string, 0, len(path))
+	for i := len(path) - 1; i >= 0; i-- {
+		names = append(names, path[i].Name)
+		ids = append(ids, path[i].ID)
+	}
+	// Display the directly assigned series name; keep ancestry separate. IDs,
+	// never names, distinguish identically named series in different branches.
+	return map[string]any{
+		"series_id": path[0].ID, "series_type": "manual", "series_label": path[0].Name,
+		"series_parent_id": path[0].ParentID, "series_path": strings.Join(names, " / "), "series_path_ids": ids,
+	}, version, nil
 }
 
 func distributionResourceURL(resource *model.Resource) (string, error) {
