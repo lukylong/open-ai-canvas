@@ -109,6 +109,7 @@ export default function AssetsPage() {
     const [previewAsset, setPreviewAsset] = useState<LibraryAsset | null>(null);
     const [deletingAsset, setDeletingAsset] = useState<LibraryAsset | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
     const [viewMode, setViewMode] = useState<"series" | "assets">("series");
     const [activeSeriesKey, setActiveSeriesKey] = useState<string | null>(null);
     const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
@@ -124,6 +125,7 @@ export default function AssetsPage() {
     useEffect(() => {
         setSeriesManager(null);
         setSelectedIds([]);
+        setSelectedFolderIds([]);
         setActiveSeriesKey(null);
         setIsAssetOpen(false);
         draftAssetIdRef.current = null;
@@ -142,6 +144,7 @@ export default function AssetsPage() {
     const scopedAssets = useMemo(() => linkedMessageId ? validAssets.filter((asset) => asset.metadata?.messageId === linkedMessageId) : validAssets, [linkedMessageId, validAssets]);
     const unassignedAssets = useMemo(() => personalSeriesQuery.data && !personalSeriesQuery.isError ? personalSeriesMembers(scopedAssets, personalSeriesQuery.data) : [], [scopedAssets, personalSeriesQuery.data, personalSeriesQuery.isError]);
     const overviewSeries = useMemo(() => personalSeriesQuery.data && !personalSeriesQuery.isError ? personalSeriesOverview(scopedAssets, personalSeriesQuery.data) : [], [scopedAssets, personalSeriesQuery.data, personalSeriesQuery.isError]);
+    const selectedFolderAssets = useMemo(() => overviewSeries.filter((series) => series.seriesType === "manual" && selectedFolderIds.includes(series.seriesId)).flatMap((series) => series.assets), [overviewSeries, selectedFolderIds]);
     const selectedAssets = useMemo(() => unassignedAssets.filter((asset) => selectedIds.includes(asset.id)), [selectedIds, unassignedAssets]);
     const countAssets = viewMode === "assets" ? unassignedAssets : scopedAssets;
     const kindCounts = useMemo(() => new Map(kindOptions.map((option) => [option.value, option.value === "all" ? countAssets.length : countAssets.filter((asset) => asset.kind === option.value).length])), [countAssets]);
@@ -212,6 +215,10 @@ export default function AssetsPage() {
         const existingIds = new Set(unassignedAssets.map((asset) => asset.id));
         setSelectedIds((current) => current.filter((id) => existingIds.has(id)));
     }, [unassignedAssets]);
+    useEffect(() => {
+        const folderIds = new Set(overviewSeries.filter((series) => series.seriesType === "manual").map((series) => series.seriesId));
+        setSelectedFolderIds((current) => current.filter((id) => folderIds.has(id)));
+    }, [overviewSeries]);
 
     const clearLinkedMessage = () => {
         const next = new URLSearchParams(searchParams);
@@ -599,6 +606,7 @@ export default function AssetsPage() {
                         <AssetFilterGroup title="业务分类" options={categoryOptions} value={categoryFilter} counts={categoryCounts} onChange={(value) => { setCategoryFilter(value as AssetCategory | "all"); setPage(1); }} className="lg:mt-5" />
                     </aside>
                     <section className="min-w-0">
+                        {viewMode === "series" && selectedFolderIds.length ? <Space wrap className="mb-3"><Typography.Text>已选择 {selectedFolderIds.length} 个系列</Typography.Text><Button disabled={!selectedFolderAssets.length || personalSeriesQuery.isError} loading={batchPublishLoading} onClick={() => void distributeAssetBatch(selectedFolderAssets)}>同步所选系列</Button><Button disabled={!selectedFolderAssets.length} onClick={() => void exportAssets(selectedFolderAssets)}>导出所选系列</Button><Button onClick={() => setSelectedFolderIds([])}>取消系列选择</Button></Space> : null}
                         {linkedMessageId ? (
                             <div className="assets-series-summary">
                                 <span className="assets-series-summary-copy"><ImageIcon /><span><strong>本次生成的 {scopedAssets.length} 个素材</strong>已按生成消息筛选，可逐项查看或批量选择</span></span>
@@ -645,7 +653,8 @@ export default function AssetsPage() {
                                                 series={series}
                                                 coverAsset={validAssets.find((asset) => asset.id === series.coverAssetId)}
                                                 selectedIds={selectedIds}
-                                                onSelect={(selected) => setSelectedIds((current) => selected ? Array.from(new Set([...current, ...series.assets.map((asset) => asset.id)])) : current.filter((id) => !series.assets.some((asset) => asset.id === id)))}
+                                                folderSelected={selectedFolderIds.includes(series.seriesId)}
+                                                onSelect={(selected) => { if (series.seriesType === "manual") setSelectedFolderIds((current) => selected ? [...new Set([...current, series.seriesId])] : current.filter((id) => id !== series.seriesId)); else setSelectedIds((current) => selected ? Array.from(new Set([...current, ...series.assets.map((asset) => asset.id)])) : current.filter((id) => !series.assets.some((asset) => asset.id === id))); }}
                                                 onOpen={() => series.seriesType === "manual" ? setSeriesManager({ assetIds: [], seriesId: series.seriesId }) : setActiveSeriesKey(series.key)}
                                                 onManage={personalSeriesQuery.data && !personalSeriesQuery.isError ? () => setSeriesManager({ assetIds: series.seriesType === "manual" ? [] : series.assets.map((asset) => asset.id), seriesId: series.seriesType === "manual" ? series.seriesId : undefined }) : undefined}
                                                 onPublish={() => void distributeAssetBatch(series.assets, series)}
@@ -1216,20 +1225,20 @@ function SharedSeriesTreeSelect({ className, value, treeData, rootOption, placeh
     />;
 }
 
-function AssetSeriesCard({ series, selectedIds, onSelect, onOpen, onPublish, onExport, onManage, coverAsset }: { series: AssetSeries<LibraryAsset>; selectedIds: string[]; onSelect: (selected: boolean) => void; onOpen: () => void; onPublish: () => void; onExport: () => void; onManage?: () => void; coverAsset?: LibraryAsset }) {
+function AssetSeriesCard({ series, selectedIds, onSelect, onOpen, onPublish, onExport, onManage, coverAsset, folderSelected = false }: { series: AssetSeries<LibraryAsset>; selectedIds: string[]; onSelect: (selected: boolean) => void; onOpen: () => void; onPublish: () => void; onExport: () => void; onManage?: () => void; coverAsset?: LibraryAsset; folderSelected?: boolean }) {
     const cover = coverAsset || series.assets[0];
-    const allSelected = series.assets.length > 0 && series.assets.every((asset) => selectedIds.includes(asset.id));
+    const allSelected = series.seriesType === "manual" ? folderSelected : series.assets.length > 0 && series.assets.every((asset) => selectedIds.includes(asset.id));
     const distributableCount = series.assets.filter((asset) => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio").length;
     const menuItems: MenuProps["items"] = [
         { key: "open", icon: <Layers3 className="size-3.5" />, label: "查看系列", onClick: onOpen },
         { key: "manage", icon: <PencilLine className="size-3.5" />, label: "整理 / 管理系列", disabled: !onManage, onClick: onManage },
-        { key: "select", icon: <CheckCheck className="size-3.5" />, label: allSelected ? "取消选择系列" : "选择整个系列", disabled: series.seriesType === "manual", onClick: () => onSelect(!allSelected) },
+        { key: "select", icon: <CheckCheck className="size-3.5" />, label: allSelected ? "取消选择系列" : "选择整个系列", onClick: () => onSelect(!allSelected) },
         { key: "export", icon: <Download className="size-3.5" />, label: "导出整个系列", onClick: onExport },
         { key: "distribute", icon: <Share2 className="size-3.5" />, label: "同步分发整个系列", disabled: distributableCount === 0, onClick: onPublish },
     ];
     return <AssetSeriesCardLayout
         selected={allSelected}
-        cover={cover ? <AssetCover asset={cover} selectable={series.seriesType !== "manual"} selected={allSelected} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} /> : <AssetLibraryCardMedia className="assets-cover"><button type="button" className="assets-cover-link" onClick={onOpen} aria-label={`打开系列：${series.title}`}><span className="assets-cover-fallback"><FolderOpen /></span></button></AssetLibraryCardMedia>}
+        cover={cover ? <AssetCover asset={cover} selectionLabel={series.seriesType === "manual" ? `选择系列：${series.title}` : undefined} selected={allSelected} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} /> : <AssetLibraryCardMedia className="assets-cover"><button type="button" className="assets-cover-link" onClick={onOpen} aria-label={`打开系列：${series.title}`}><span className="assets-cover-fallback"><FolderOpen /></span></button></AssetLibraryCardMedia>}
         title={series.title}
         updatedLabel={formatAssetTime(series.updatedAt)}
         summary={`${series.assetCount} 个素材 · ${series.kind === "mixed" ? "混合类型" : assetKindLabel(series.kind)}`}
@@ -1280,7 +1289,7 @@ function DistributionStatus({ status }: { status: DistributionPublication["statu
     return <Tag color={value.color}>{value.label}</Tag>;
 }
 
-function AssetCover({ asset, selected, onSelect, onOpen, menuItems, selectable = true }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"]; selectable?: boolean }) {
+function AssetCover({ asset, selected, onSelect, onOpen, menuItems, selectionLabel }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"]; selectionLabel?: string }) {
     const KindIcon = assetKindIcons[asset.kind];
     const clock = asset.kind === "video" || asset.kind === "audio" ? formatAssetClock(asset.data.durationMs) : null;
     const showPlay = asset.kind === "video";
@@ -1305,7 +1314,7 @@ function AssetCover({ asset, selected, onSelect, onOpen, menuItems, selectable =
                 <span className="assets-cover-badge is-category">{assetCategoryLabel(asset.category)}</span>
             </span>
             {clock ? <span className="assets-cover-clock">{clock}</span> : null}
-            {selectable ? <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} /> : null}
+            <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={selectionLabel || `选择 ${asset.title}`} />
             <Dropdown
                 trigger={["click"]}
                 menu={{ items: menuItems }}
