@@ -70,10 +70,11 @@ func TestTerminalDistributionFailureStopsUntilExplicitRetry(t *testing.T) {
 	if err := repo.FailDistributionOutbox(item.ID, pub.ID, "terminal", now, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.First(&item, "id = ?", item.ID).Error; err != nil {
+	var terminalItem model.DistributionOutbox
+	if err := db.First(&terminalItem, "id = ?", item.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if item.Status != model.DistributionOutboxStopped || item.NextAttemptAt != nil {
+	if terminalItem.Status != model.DistributionOutboxStopped || terminalItem.NextAttemptAt != nil {
 		t.Fatal("terminal outbox still scheduled")
 	}
 	if _, err := repo.ClaimDistributionOutbox(now.Add(24 * time.Hour)); !errors.Is(err, gorm.ErrRecordNotFound) {
