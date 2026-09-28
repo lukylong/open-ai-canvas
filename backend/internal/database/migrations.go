@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 8
+const CurrentSchemaVersion int64 = 9
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -55,6 +55,11 @@ var schemaMigrations = []migration{
 	{version: 6, name: "legacy_zq_asset_client_payload", checksum: legacyZQAssetPayloadChecksum, apply: migrateSchemaV6},
 	{version: 7, name: "shared_asset_series_hierarchy", checksum: sharedAssetSeriesHierarchyChecksum, apply: migrateSchemaV7},
 	{version: 8, name: "personal_asset_series", checksum: "sha256:personal-asset-series-v8", apply: migrateSchemaV8},
+	{version: 9, name: "generated_media_outputs", checksum: "sha256:generated-media-outputs-v9-20260923", apply: migrateSchemaV9},
+}
+
+func migrateSchemaV9(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.GeneratedMediaOutput{})
 }
 
 func migrateSchemaV8(tx *gorm.DB) error {

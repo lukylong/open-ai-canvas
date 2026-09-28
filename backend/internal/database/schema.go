@@ -65,6 +65,7 @@ func Models() []any {
 		&model.SkillFile{},
 		&model.UserSkillState{},
 		&model.Resource{},
+		&model.GeneratedMediaOutput{},
 		&model.ResourceDeletionJob{},
 		&model.AnnouncementImageDraft{},
 		&model.Asset{},

@@ -140,7 +140,7 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 		return &ProviderTaskQueryResult{Task: taskForOutput(*task), ProviderStatus: providerStatus, Recovered: false}, nil
 	}
 
-	result, err = s.persistGeneratedMediaResult(task.UserID, result)
+	result, outputResources, err := s.persistGeneratedMediaResultWithOutputs(task.UserID, result)
 	if err != nil {
 		_ = s.log(task.UserID, task.ID, "error", "人工查询已取得视频，但结果保存失败", err.Error())
 		return nil, err
@@ -152,7 +152,7 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 	task.Error = ""
 	task.PollStage = strings.ToLower(providerStatus)
 	task.NextPollAt = nil
-	if err := s.saveTaskCompletionWithinStorageQuota(task, resultJSON, nil, false); err != nil {
+	if err := s.saveTaskCompletionWithinStorageQuotaWithOutputs(task, resultJSON, nil, false, outputResources); err != nil {
 		uncertainErr := billing.MarkBillingUncertain(task.BillingOrderID, "人工查询确认上游成功，但任务结果未保存："+err.Error())
 		_ = s.log(task.UserID, task.ID, "error", "人工查询已取得视频，但任务恢复失败", err.Error())
 		if uncertainErr != nil {

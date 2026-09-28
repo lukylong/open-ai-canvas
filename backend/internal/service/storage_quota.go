@@ -113,6 +113,10 @@ func (s *Service) createTaskWithinStorageQuota(task *model.Task, billingOrder *m
 
 // 任务完成会同时扩张任务历史和 Agent 会话数据，必须在同一临界区核算并原子写入。
 func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJSON []byte, opsJSON []byte, hasCanvasOps bool) error {
+	return s.saveTaskCompletionWithinStorageQuotaWithOutputs(task, resultJSON, opsJSON, hasCanvasOps, nil)
+}
+
+func (s *Service) saveTaskCompletionWithinStorageQuotaWithOutputs(task *model.Task, resultJSON []byte, opsJSON []byte, hasCanvasOps bool, outputResources []model.Resource) error {
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return err
@@ -169,7 +173,16 @@ func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJ
 	completed.ResultJSON = string(resultJSON)
 	completed.InputJSON = publicInputJSON
 	completed.CompletedAt = ptr(time.Now())
-	if err := s.repo.SaveTaskCompletion(&completed, expectedStatus, session, message, results); err != nil {
+	outputs := make([]model.GeneratedMediaOutput, 0, len(outputResources))
+	seen := make(map[string]bool, len(outputResources))
+	for _, resource := range outputResources {
+		if resource.ID == "" || seen[resource.ID] || resource.UserID != task.UserID || resource.Status != model.ResourceStatusReady || (resource.Kind != "image" && resource.Kind != "video") {
+			continue
+		}
+		seen[resource.ID] = true
+		outputs = append(outputs, model.GeneratedMediaOutput{TaskID: task.ID, ResourceID: resource.ID, UserID: task.UserID, Kind: resource.Kind, Model: task.Model, CreatedAt: *completed.CompletedAt})
+	}
+	if err := s.repo.SaveTaskCompletionWithOutputs(&completed, expectedStatus, session, message, results, outputs); err != nil {
 		return err
 	}
 	*task = completed

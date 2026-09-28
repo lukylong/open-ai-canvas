@@ -499,11 +499,21 @@ func (s *Service) persistGeneratedMediaResult(userID string, result map[string]i
 	return s.persistGeneratedMediaResultMode(userID, result, false, true)
 }
 
+func (s *Service) persistGeneratedMediaResultWithOutputs(userID string, result map[string]interface{}) (map[string]interface{}, []model.Resource, error) {
+	outputs := []model.Resource{}
+	stored, err := s.persistGeneratedMediaResultModeWithOutputs(userID, result, false, true, &outputs)
+	return stored, outputs, err
+}
+
 func (s *Service) persistLegacyGeneratedMediaResult(userID string, result map[string]interface{}) (map[string]interface{}, error) {
 	return s.persistGeneratedMediaResultMode(userID, result, true, false)
 }
 
 func (s *Service) persistGeneratedMediaResultMode(userID string, result map[string]interface{}, skipInvalidDataURL bool, enforceQuota bool) (map[string]interface{}, error) {
+	return s.persistGeneratedMediaResultModeWithOutputs(userID, result, skipInvalidDataURL, enforceQuota, nil)
+}
+
+func (s *Service) persistGeneratedMediaResultModeWithOutputs(userID string, result map[string]interface{}, skipInvalidDataURL bool, enforceQuota bool, outputs *[]model.Resource) (map[string]interface{}, error) {
 	if result == nil {
 		return map[string]interface{}{}, nil
 	}
@@ -515,7 +525,7 @@ func (s *Service) persistGeneratedMediaResultMode(userID string, result map[stri
 	if err := json.Unmarshal(encoded, &normalized); err != nil {
 		return nil, err
 	}
-	value, err := s.persistGeneratedMediaValueMode(userID, normalized, skipInvalidDataURL, enforceQuota)
+	value, err := s.persistGeneratedMediaValueModeWithOutputs(userID, normalized, skipInvalidDataURL, enforceQuota, outputs)
 	if err != nil {
 		return nil, err
 	}
@@ -527,10 +537,14 @@ func (s *Service) persistGeneratedMediaValue(userID string, value interface{}) (
 }
 
 func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{}, skipInvalidDataURL bool, enforceQuota bool) (interface{}, error) {
+	return s.persistGeneratedMediaValueModeWithOutputs(userID, value, skipInvalidDataURL, enforceQuota, nil)
+}
+
+func (s *Service) persistGeneratedMediaValueModeWithOutputs(userID string, value interface{}, skipInvalidDataURL bool, enforceQuota bool, outputs *[]model.Resource) (interface{}, error) {
 	switch item := value.(type) {
 	case []interface{}:
 		for index, child := range item {
-			stored, err := s.persistGeneratedMediaValueMode(userID, child, skipInvalidDataURL, enforceQuota)
+			stored, err := s.persistGeneratedMediaValueModeWithOutputs(userID, child, skipInvalidDataURL, enforceQuota, outputs)
 			if err != nil {
 				return nil, err
 			}
@@ -566,6 +580,9 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 				if enforceQuota {
 					s.commitUserUploadQuota(userID, int64(len(data)))
 				}
+				if outputs != nil && (resource.Kind == "image" || resource.Kind == "video") {
+					*outputs = append(*outputs, *resource)
+				}
 				resourceURL := "/api/resources/" + resource.ID + "/file"
 				for _, key := range []string{"dataUrl", "content", "url", "coverUrl"} {
 					if text, ok := item[key].(string); ok && (text == raw || strings.HasPrefix(text, "blob:")) {
@@ -585,7 +602,7 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 			}
 		}
 		for key, child := range item {
-			stored, err := s.persistGeneratedMediaValueMode(userID, child, skipInvalidDataURL, enforceQuota)
+			stored, err := s.persistGeneratedMediaValueModeWithOutputs(userID, child, skipInvalidDataURL, enforceQuota, outputs)
 			if err != nil {
 				return nil, err
 			}

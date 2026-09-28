@@ -512,6 +512,10 @@ func (r *Repository) UpdateTaskProviderProgress(id string, progress int) error {
 }
 
 func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result) error {
+	return r.SaveTaskCompletionWithOutputs(task, expected, session, message, results, nil)
+}
+
+func (r *Repository) SaveTaskCompletionWithOutputs(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result, outputs []model.GeneratedMediaOutput) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		updated := tx.Model(&model.Task{}).
 			Where("id = ? AND status = ?", task.ID, expected).
@@ -534,6 +538,11 @@ func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskSta
 		}
 		for index := range results {
 			if err := tx.Create(&results[index]).Error; err != nil {
+				return err
+			}
+		}
+		if len(outputs) > 0 {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&outputs).Error; err != nil {
 				return err
 			}
 		}

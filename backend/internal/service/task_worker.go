@@ -157,9 +157,10 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		return stateErr
 	}
 	result, canvasOps, err := routeResult.result, routeResult.canvasOps, routeResult.err
+	var outputResources []model.Resource
 	providerSucceeded := routeResult.providerSucceeded
 	if err == nil {
-		result, err = s.persistGeneratedMediaResult(task.UserID, result)
+		result, outputResources, err = s.persistGeneratedMediaResultWithOutputs(task.UserID, result)
 	}
 	if err == nil {
 		_, err = s.finalizeCharacterTurnaroundTask(*task, result)
@@ -205,7 +206,7 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		_, terminalErr := terminal.handleResultPersistenceFailure(task, fmt.Errorf("序列化画布操作失败：%w", err))
 		return terminalErr
 	}
-	if err := s.saveTaskCompletionWithinStorageQuota(task, resultJSON, opsJSON, len(canvasOps) > 0); err != nil {
+	if err := s.saveTaskCompletionWithinStorageQuotaWithOutputs(task, resultJSON, opsJSON, len(canvasOps) > 0, outputResources); err != nil {
 		_, terminalErr := terminal.handleResultPersistenceFailure(task, err)
 		return terminalErr
 	}

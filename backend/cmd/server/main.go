@@ -117,6 +117,7 @@ func run(ctx context.Context) error {
 	handler.RegisterResponseInterceptionRoutes(api, svc)
 	handler.RegisterAdminRoutes(api, svc)
 	handler.RegisterAdminAnalyticsRoutes(api, svc)
+	handler.RegisterGeneratedMediaAnalyticsRoutes(api, svc)
 	handler.RegisterAdminStorageRoutes(api, svc)
 	handler.RegisterAdminUpdateRoutes(api, svc)
 	handler.RegisterAnnouncementRoutes(api, svc)
