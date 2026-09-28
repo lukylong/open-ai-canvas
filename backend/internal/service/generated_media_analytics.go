@@ -17,6 +17,11 @@ type GeneratedMediaAnalytics struct {
 	ActiveUsers      int64                            `json:"activeUsers"`
 	ActiveUsersBasis string                           `json:"activeUsersBasis"`
 	GenerationTasks  int64                            `json:"generationTasks"`
+	SuccessfulTasks  int64                            `json:"successfulTasks"`
+	FailedTasks      int64                            `json:"failedTasks"`
+	ActiveCreators   int64                            `json:"activeCreators"`
+	TaskTrend        []repository.GenerationTaskDay   `json:"taskTrend"`
+	TaskModels       []repository.GenerationTaskType  `json:"taskModels"`
 	ImageOutputs     int64                            `json:"imageOutputs"`
 	VideoOutputs     int64                            `json:"videoOutputs"`
 	Trend            []repository.GeneratedMediaDay   `json:"trend"`
@@ -52,7 +57,7 @@ func (s *Service) GlobalGeneratedMediaAnalytics(fromText, toText string) (*Gener
 	if err != nil {
 		return nil, err
 	}
-	tasks, err := s.repo.GenerationTaskCount(startUTC, endUTC)
+	tasks, err := s.repo.GenerationTaskOverview(startUTC, endUTC)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +67,8 @@ func (s *Service) GlobalGeneratedMediaAnalytics(fromText, toText string) (*Gener
 	}
 	result := &GeneratedMediaAnalytics{
 		From: fromText, To: toText, Timezone: location.String(), GeneratedAt: time.Now().UTC(), TrackingStarted: trackingStarted,
-		CoverageComplete: !startUTC.Before(trackingStarted), ActiveUsers: activeUsers, ActiveUsersBasis: "utc_day_overlap", GenerationTasks: tasks,
+		CoverageComplete: !startUTC.Before(trackingStarted), ActiveUsers: activeUsers, ActiveUsersBasis: "utc_day_overlap", GenerationTasks: tasks.Count,
+		SuccessfulTasks: tasks.Succeeded, FailedTasks: tasks.Failed, ActiveCreators: tasks.Creators, TaskTrend: tasks.Trend, TaskModels: tasks.Types,
 		Trend: trend, Models: models,
 	}
 	for _, item := range counts {

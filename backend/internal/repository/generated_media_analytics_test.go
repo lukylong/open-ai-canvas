@@ -42,3 +42,31 @@ func TestSaveTaskCompletionWithOutputsIsAtomic(t *testing.T) {
 		t.Fatalf("outputs after rejected completion = %d, err = %v; want one", count, err)
 	}
 }
+
+func TestGenerationTaskOverviewDoesNotConfuseTasksWithOutputs(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AutoMigrate(&model.Task{}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 9, 21, 16, 0, 0, 0, time.UTC)
+	tasks := []model.Task{
+		{ID: "one", UserID: "a", Type: "canvas_image", Status: model.TaskStatusSucceeded, CreatedAt: start},
+		{ID: "two", UserID: "a", Type: "canvas_video", Status: model.TaskStatusFailed, CreatedAt: start.Add(time.Hour)},
+		{ID: "three", UserID: "b", Type: "canvas_image", Status: model.TaskStatusSucceeded, CreatedAt: start.Add(2 * time.Hour)},
+		{ID: "not-media", UserID: "c", Type: "canvas_text", Status: model.TaskStatusSucceeded, CreatedAt: start},
+		{ID: "end-excluded", UserID: "d", Type: "canvas_image", Status: model.TaskStatusSucceeded, CreatedAt: start.Add(24 * time.Hour)},
+	}
+	if err = db.Create(&tasks).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(db).GenerationTaskOverview(start, start.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Count != 3 || got.Succeeded != 2 || got.Failed != 1 || got.Creators != 2 || len(got.Trend) != 1 || got.Trend[0].Day != "2026-09-22" {
+		t.Fatalf("wrong summary: %+v", got)
+	}
+}
