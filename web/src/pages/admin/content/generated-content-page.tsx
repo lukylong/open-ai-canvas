@@ -18,8 +18,7 @@ import {
 import { getAdminReferences, type AdminReferenceData } from "@/services/api/auth";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminDataTable, AdminFilterChip, AdminStatusBadge, AdminTableEmpty, type AdminStatusTone } from "../components/admin-ui";
-
-type ContentTab = "resources" | "tasks";
+import { contentTabFilterPatch, generatedContentStatusOptions, normalizeContentStatus, type ContentTab } from "./generated-content-filters";
 
 export default function GeneratedContentPage() {
     const { message } = App.useApp();
@@ -28,7 +27,7 @@ export default function GeneratedContentPage() {
     const keyword = searchParams.get("filter") || "";
     const userId = searchParams.get("userId") || "";
     const kind = searchParams.get("kind") || "all";
-    const status = searchParams.get("status") || "all";
+    const status = normalizeContentStatus(tab, searchParams.get("status"));
     const sourceSystem = searchParams.get("sourceSystem") || "all";
     const page = positiveInt(searchParams.get("page"), 1);
     const pageSize = normalizePageSize(searchParams.get("pageSize"));
@@ -140,7 +139,7 @@ export default function GeneratedContentPage() {
         <AdminPageFrame title="用户内容" description="跨用户查看生成记录、提示词与媒体素材">
             <Tabs
                 activeKey={tab}
-                onChange={(value) => updateUrl({ tab: value, page: 1 })}
+                onChange={(value) => updateUrl(contentTabFilterPatch(normalizeTab(value), status))}
                 items={[
                     { key: "resources", label: "媒体素材" },
                     { key: "tasks", label: "生成记录" },
@@ -201,9 +200,7 @@ function AdminGeneratedContentTable<T extends AdminGeneratedResource | AdminGene
     updateUrl: (patch: Record<string, string | number>, replace?: boolean) => void;
     onTaskClick?: (task: AdminGeneratedTask) => void;
 }) {
-    const statusOptions = tab === "resources"
-        ? [{ label: "全部状态", value: "all" }, { label: "可用", value: "ready" }, { label: "失败", value: "failed" }]
-        : [{ label: "全部状态", value: "all" }, { label: "排队中", value: "queued" }, { label: "生成中", value: "running" }, { label: "成功", value: "succeeded" }, { label: "失败", value: "failed" }, { label: "已取消", value: "cancelled" }];
+    const statusOptions = generatedContentStatusOptions[tab];
     return <AdminDataTable
         toolbar={<Input allowClear className="app-list-search" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder={tab === "resources" ? "搜索用户、资源 ID 或对象路径" : "搜索用户、提示词、模型或任务 ID"} onChange={(event) => updateUrl({ filter: event.target.value, page: 1 }, true)} />}
         toolbarActiveFilters={<>{keyword ? <AdminFilterChip label={`搜索：${keyword}`} onRemove={() => updateUrl({ filter: "", page: 1 })} /> : null}{userId ? <AdminFilterChip label={`用户：${references.users.find((item) => item.id === userId)?.displayName || userId}`} onRemove={() => updateUrl({ userId: "", page: 1 })} /> : null}</>}

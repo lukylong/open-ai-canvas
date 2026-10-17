@@ -220,6 +220,9 @@ func withProviderRequestKind(ctx context.Context, requestKind string) context.Co
 }
 
 func (e providerHTTPError) Error() string {
+	if message := providerOperationalFailureHint(e); message != "" {
+		return message
+	}
 	switch e.StatusCode {
 	case 524:
 		return "上游网关超时（524）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
@@ -230,14 +233,65 @@ func (e providerHTTPError) Error() string {
 	case http.StatusNotFound:
 		return "模型或模型接口不存在，请检查渠道配置"
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
-		return "模型服务响应超时，请稍后重试"
+		return "模型服务响应超时；生成结果待确认，请先核对任务或账单，避免重复计费。"
 	case http.StatusTooManyRequests:
-		return "模型服务请求过于频繁或额度不足，请稍后重试"
+		if e.RetryAfter > 0 {
+			seconds := int64(math.Ceil(e.RetryAfter.Seconds()))
+			return fmt.Sprintf("模型服务请求限流：上游建议等待至少 %d 秒后再试；也可更换通道。", seconds)
+		}
+		return "模型服务请求限流，请稍后重试或更换通道；持续出现请联系管理员检查配额。"
 	}
 	if e.StatusCode >= http.StatusInternalServerError {
-		return fmt.Sprintf("模型服务暂时不可用（HTTP %d）", e.StatusCode)
+		return fmt.Sprintf("模型服务暂时不可用（HTTP %d）；生成结果待确认，请先核对任务或账单，避免重复计费。", e.StatusCode)
 	}
 	return fmt.Sprintf("模型服务请求失败（HTTP %d）", e.StatusCode)
+}
+
+// 只读取错误对象的诊断字段，输出固定文案；不扫描提示词、HTML 或回传上游正文。
+// 此分类仅改善提示，不改变提交是否安全、自动选路和计费判断。
+func providerOperationalFailureHint(e providerHTTPError) string {
+	switch e.StatusCode {
+	case 400, 402, 422, 429, 503:
+	default:
+		return ""
+	}
+	var payload struct {
+		Error   json.RawMessage `json:"error"`
+		Code    string          `json:"code"`
+		Type    string          `json:"type"`
+		Message string          `json:"message"`
+	}
+	if json.Unmarshal([]byte(e.Body), &payload) != nil {
+		return ""
+	}
+	code, kind, message := payload.Code, payload.Type, payload.Message
+	if len(payload.Error) > 0 && string(payload.Error) != "null" {
+		var detail struct {
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(payload.Error, &detail) == nil {
+			code, kind, message = detail.Code, detail.Type, detail.Message
+		} else if json.Unmarshal(payload.Error, &message) != nil {
+			return ""
+		}
+	}
+	code, kind, message = strings.ToLower(strings.TrimSpace(code)), strings.ToLower(strings.TrimSpace(kind)), strings.ToLower(strings.TrimSpace(message))
+	if e.StatusCode == 402 || e.StatusCode == 429 {
+		if code == "insufficient_quota" || kind == "insufficient_quota" || code == "insufficient_balance" || code == "quota_exceeded" || strings.HasPrefix(message, "insufficient quota") || strings.HasPrefix(message, "insufficient balance") || strings.HasPrefix(message, "you exceeded your current quota") {
+			return "模型服务额度不足，请联系管理员检查渠道余额或配额，或更换通道；直接重试无法解决。"
+		}
+	}
+	if e.StatusCode == 503 && (message == "no available compatible accounts" || code == "no_available_accounts") {
+		return "当前通道暂无可用账号，请稍后重试或更换通道；持续出现请联系管理员。"
+	}
+	if e.StatusCode == 400 || e.StatusCode == 422 {
+		if code == "model_not_supported" || code == "unsupported_model" || (strings.HasPrefix(message, "the '") && strings.Contains(message, "' model is not supported when using codex with a chatgpt account")) {
+			return "当前通道不支持所选模型，请更换模型或联系管理员检查渠道配置。"
+		}
+	}
+	return ""
 }
 
 func providerUserFacingErrorMessage(err error) string {
@@ -248,7 +302,7 @@ func providerUserFacingErrorMessage(err error) string {
 		return "模型请求已取消"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "模型服务响应超时，请稍后重试"
+		return "模型服务响应超时；生成结果待确认，请先核对任务或账单，避免重复计费。"
 	}
 	var appErr *AppError
 	if errors.As(err, &appErr) && strings.TrimSpace(appErr.Message) != "" {
@@ -256,6 +310,9 @@ func providerUserFacingErrorMessage(err error) string {
 	}
 	var httpErr providerHTTPError
 	if errors.As(err, &httpErr) {
+		if message := providerOperationalFailureHint(httpErr); message != "" {
+			return message
+		}
 		// 仅对上游参数校验类状态码解析正文。其他状态码的正文可能是网关 HTML、
 		// 鉴权诊断或含密钥的内部信息，归类价值低且更容易误判。
 		switch httpErr.StatusCode {

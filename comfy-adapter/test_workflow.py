@@ -6,7 +6,8 @@ from workflow import compile_workflow, load_registry, public_model
 class WorkflowCompilerTests(unittest.TestCase):
     def test_registry_contains_inherited_enabled_workflows(self):
         registry = load_registry()
-        self.assertEqual(len(registry), 15)
+        self.assertEqual(len(registry), 16)
+        self.assertIn("qwen_image_2_1", registry)
         self.assertIn("qwen_image", registry)
         self.assertIn("minimax_h3_r2v", registry)
         self.assertIn("minimax_h3_hybrid_v0331_t2v", registry)
@@ -26,16 +27,38 @@ class WorkflowCompilerTests(unittest.TestCase):
 
     def test_model_catalog_exposes_every_workflow_with_routing_metadata(self):
         models = {item.key: public_model(item) for item in load_registry().values()}
-        self.assertEqual(len(models), 15)
+        self.assertEqual(len(models), 16)
         self.assertEqual(models["qwen_image"]["model_type"], "image")
         self.assertEqual(models["qwen_image"]["supported_endpoint_types"], ["comfyui-workflow", "text_to_image"])
         self.assertEqual(models["qwen_image"]["max_images"], 0)
+        self.assertEqual(models["qwen_image_2_1"]["supported_endpoint_types"], ["comfyui-workflow", "text_to_image"])
+        self.assertEqual(models["qwen_image_2_1"]["max_images"], 0)
         self.assertEqual(models["qwen_image_edit_2509"]["min_images"], 1)
         self.assertEqual(models["minimax_h3_t2v_official"]["supported_endpoint_types"], ["comfyui-workflow", "text_to_video"])
         self.assertEqual(models["minimax_h3_r2v_4step"]["max_images"], 9)
         self.assertIn("reference_to_video", models["minimax_h3_r2v_4step"]["supported_endpoint_types"])
         self.assertEqual(models["minimax_h3_hybrid_v0331_t2v"]["min_images"], 0)
         self.assertEqual(models["minimax_h3_hybrid_v0331_i2v"]["max_images"], 9)
+
+    def test_qwen21_uses_validated_native_nodes_and_blackwell_attention(self):
+        spec = load_registry()["qwen_image_2_1"]
+        graph = compile_workflow(spec, {"prompt": "春日咖啡", "negative_prompt": "watermark", "width": 1920, "height": 1080, "seed": 17, "batch_size": 2}, [], "qwen21-test")
+        self.assertEqual(graph["452"]["inputs"]["prompt"], "春日咖啡")
+        self.assertEqual(graph["452"]["inputs"]["negative_prompt"], "watermark")
+        self.assertEqual(graph["458"]["inputs"]["model"], ["476", 0])
+        self.assertEqual(graph["476"]["inputs"]["attention"], "comfy kitchen attention")
+        self.assertEqual(graph["458"]["inputs"]["cfg"], 1)
+        self.assertEqual(graph["458"]["inputs"]["steps"], 25)
+        self.assertEqual(graph["458"]["inputs"]["seed"], 17)
+        size = graph["456"]["inputs"]
+        self.assertEqual(size["width"] % 32, 0)
+        self.assertEqual(size["height"] % 32, 0)
+        self.assertLessEqual(size["width"] * size["height"], 1024 * 1024)
+        self.assertEqual(size["batch_size"], 2)
+        self.assertEqual(graph["461"]["inputs"]["filename_prefix"], "QwenImage21_qwen21-test")
+        pristine = compile_workflow(spec, {"prompt": "second"}, [], "second")
+        self.assertEqual(pristine["456"]["inputs"]["width"], 1024)
+        self.assertEqual(pristine["456"]["inputs"]["batch_size"], 1)
 
     def test_text_to_image_parameters_are_patched_without_mutating_source(self):
         spec = load_registry()["qwen_image"]

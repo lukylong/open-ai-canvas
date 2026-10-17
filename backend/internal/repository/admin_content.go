@@ -23,7 +23,7 @@ func (r *Repository) AdminGeneratedTasks(filter AdminGeneratedContentFilter, lim
 		query = query.Where("status = ?", status)
 	}
 	if kind := strings.ToLower(strings.TrimSpace(filter.Kind)); kind != "" {
-		query = query.Where("LOWER(type) = ? OR LOWER(type) LIKE ? OR LOWER(operation) = ?", kind, kind+"%", kind)
+		query = query.Where("LOWER(type) IN ? OR LOWER(type) LIKE ? OR LOWER(operation) = ?", []string{kind, "canvas_" + kind}, kind+"%", kind)
 	}
 	if keyword := strings.ToLower(strings.TrimSpace(filter.Keyword)); keyword != "" {
 		like := "%" + keyword + "%"

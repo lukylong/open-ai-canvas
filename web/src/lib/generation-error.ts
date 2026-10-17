@@ -30,6 +30,9 @@ export function generationErrorMessage(error: unknown) {
 
     const providerMessage = extractStructuredProviderMessage(raw) || extractWrappedProviderMessage(raw);
     const displayMessage = providerMessage || raw;
+    // 后端固定诊断文案中的 HTTP 状态不是网络异常，保留结果不确定和计费提示。
+    // 全文匹配，不能让附带 URL、密钥或任意诊断正文的字符串绕过下方过滤。
+    if (/^模型服务暂时不可用（HTTP 5\d{2}）；生成结果待确认，请先核对任务或账单，避免重复计费。$/.test(displayMessage)) return displayMessage;
     if (isContentModerationError(displayMessage)) return CONTENT_MODERATION_MESSAGE;
     const resourceStorageMessage = resourceStorageFailureMessage(raw) || resourceStorageFailureMessage(displayMessage);
     if (resourceStorageMessage) return resourceStorageMessage;

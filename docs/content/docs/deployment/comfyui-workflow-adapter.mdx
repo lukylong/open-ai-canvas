@@ -65,6 +65,22 @@ workflow JSON 与 manifest 一起提交 Git。adapter 返回 workflow 文件 SHA
 
 ## 工作流约束
 
+### Qwen Image 2.1 文生图
+
+`qwen_image_2_1` 使用官方原生文生图图结构、INT8 主模型及文本编码器、BF16 VAE。
+目标服务需要 ComfyUI v0.37.0 或以上版本，并注册 `TextEncodeQwenImage21`、
+`EmptyLatentImage`、`ModelAttentionBackend` 和 `SaveImageAdvanced`。有节点白名单的服务只应加入所需节点，不能关闭既有安全限制。
+
+工作流固定为 25 步、CFG 1、Euler / simple；Blackwell 服务使用
+`ModelAttentionBackend.attention = comfy kitchen attention`，避免已复现的 cuDNN 执行计划错误。
+适配器按宽高比缩放到最多约 1 百万像素并对齐 32 像素。前台应仅公布标准宽高比，
+不承诺原生 2K/4K 输出；当前入口不接收参考图、蒙版或透明背景参数。
+
+新入口应独立配置，不能替换旧的 `qwen_image` 或 `qwen_image_edit_2509`。
+模型官方公开许可证限研究评测；用于商业业务前需确认已经获得单独商业授权。
+
+### 通用要求
+
 - manifest 必须显式声明 prompt、seed、尺寸、时长、输入图和保存节点。
 - 需要参考图的 workflow 在缺图时立即失败。
 - 输入数量、尺寸、时长、batch 和 denoise 在 adapter 边界校验。
